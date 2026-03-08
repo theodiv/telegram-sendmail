@@ -31,7 +31,7 @@ jobs:
         run: pre-commit autoupdate
 
       - name: Open PR if hooks were updated
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.PAT_TOKEN }}
           commit-message: "chore: bump pre-commit hook revisions"
