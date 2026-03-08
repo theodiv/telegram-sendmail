@@ -1,7 +1,7 @@
 name: Request a feature
 description: Propose an enhancement or new capability for telegram-sendmail.
 title: "feat: <short description>"
-labels: ["enhancement", "triage"]
+labels: ["feat", "triage"]
 body:
   - type: checkboxes
     id: preflight
