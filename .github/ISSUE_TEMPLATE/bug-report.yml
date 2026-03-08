@@ -3,7 +3,7 @@ description: >-
   Report a defect in telegram-sendmail. Security vulnerabilities must be
   reported via GitHub's private advisory feature, not this form.
 title: "bug: <short description>"
-labels: ["bug", "triage"]
+labels: ["fix", "triage"]
 body:
   - type: checkboxes
     id: preflight
