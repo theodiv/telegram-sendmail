@@ -1,0 +1,49 @@
+name: Update pre-commit hooks
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  autoupdate:
+    name: Pre-commit autoupdate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run autoupdate
+        run: pre-commit autoupdate
+
+      - name: Open PR if hooks were updated
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          commit-message: "chore: bump pre-commit hook revisions"
+          branch: chore/pre-commit-autoupdate
+          title: "chore: bump pre-commit hook revisions"
+          body: |
+            Automated `pre-commit autoupdate` run. The `rev` values in
+            `.pre-commit-config.yaml` have been bumped to the latest tags.
+
+            Review the diff carefully before merging:
+            - Confirm the new hook versions are stable releases, not pre-releases.
+            - Run `pre-commit run --all-files` locally against the updated config
+              to verify no new violations are introduced.
+          labels: chore
+          delete-branch: true

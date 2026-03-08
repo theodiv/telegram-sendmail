@@ -1,0 +1,44 @@
+# Build and distribution
+dist/
+build/
+*.egg-info/
+*.egg
+
+# PyInstaller / Nuitka binary artifacts
+*.spec
+*.onefile-build/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+coverage.json
+coverage.xml
+htmlcov/
+
+# Quality tools cache
+.mypy_cache/
+.ruff_cache/
+
+# Configuration files with secrets
+*.ini
+
+# Editor and OS artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs and spools
+*.log
+/var/

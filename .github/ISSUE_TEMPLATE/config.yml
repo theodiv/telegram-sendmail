@@ -1,0 +1,20 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Ask a question
+    url: https://github.com/theodiv/telegram-sendmail/discussions/new?category=q-a
+    about: >-
+      For configuration questions, general troubleshooting, or usage help,
+      open a thread in GitHub's Q&A discussions rather than the issue tracker.
+
+  - name: Start a discussion
+    url: https://github.com/theodiv/telegram-sendmail/discussions/new?category=general
+    about: >-
+      For general feedback, ideas, or to showcase how you are using the tool,
+      open a thread in GitHub's General discussions.
+
+  - name: Read the documentation
+    url: https://github.com/theodiv/telegram-sendmail/blob/main/README.md
+    about: >-
+      Consult the README.md for installation, configuration, and troubleshooting
+      guidance before opening an issue.

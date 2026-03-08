@@ -1,0 +1,114 @@
+name: Request a feature
+description: Propose an enhancement or new capability for telegram-sendmail.
+title: "feat: <short description>"
+labels: ["enhancement", "triage"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: >-
+            The feature is not already proposed in
+            [open issues](https://github.com/theodiv/telegram-sendmail/issues).
+          required: true
+        - label: >-
+            The feature aligns with the project scope: a system-level sendmail
+            replacement for forwarding daemon mail to Telegram.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: telegram-sendmail version
+      description: Output of `telegram-sendmail --version`
+      placeholder: telegram-sendmail 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      description: Output of `python3 --version`
+      placeholder: Python 3.11.9
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and distribution
+      placeholder: Ubuntu 24.04 LTS (Noble Numbat)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature area
+      description: Which part of the system does this feature concern?
+      options:
+        - Configuration / INI options
+        - MIME / HTML parsing pipeline
+        - Telegram message formatting
+        - Mail spooling / archival
+        - SMTP server mode (-bs)
+        - Logging / observability
+        - CLI flags / sendmail compatibility
+        - Security hardening
+        - Build / packaging / installation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: >-
+        Describe the operational problem or gap that this feature would address.
+        A concrete use case (e.g. "when running under systemd as a non-root
+        user, X cannot be done because Y") is more actionable than a general
+        wish list item.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed solution
+      description: >-
+        Describe the behaviour expected from the implemented feature, including
+        any proposed changes to the INI config format, CLI flags, exit codes,
+        or log output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >-
+        Describe any workarounds currently in use and why they are insufficient.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: >-
+        Any other context, references to relevant RFCs or upstream documentation,
+        or links to similar implementations in other tools.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution intent
+      options:
+        - label: >-
+            A pull request implementing this feature is planned or already in
+            progress.

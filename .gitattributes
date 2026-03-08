@@ -1,0 +1,20 @@
+* text=auto eol=lf
+
+# Text files
+*.py            text eol=lf diff=python
+*.md            text eol=lf diff=markdown
+*.toml          text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.ini.example   text eol=lf
+.editorconfig   text eol=lf
+.gitattributes  text eol=lf
+.gitignore      text eol=lf
+LICENSE         text eol=lf
+
+# Binary files
+docs/**/*.png   binary
+
+# Linguist overrides
+src/telegram_sendmail/py.typed linguist-generated=true
+telegram-sendmail.ini.example  linguist-language=INI

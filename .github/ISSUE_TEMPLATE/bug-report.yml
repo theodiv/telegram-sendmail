@@ -1,0 +1,143 @@
+name: Report a bug
+description: >-
+  Report a defect in telegram-sendmail. Security vulnerabilities must be
+  reported via GitHub's private advisory feature, not this form.
+title: "bug: <short description>"
+labels: ["bug", "triage"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: >-
+            The issue is not already reported in
+            [open issues](https://github.com/theodiv/telegram-sendmail/issues).
+          required: true
+        - label: >-
+            The output of `journalctl -t telegram-sendmail --since "1 hour ago"`
+            has been reviewed.
+          required: true
+        - label: >-
+            The bot token and chat ID have been **removed** from all log excerpts
+            included below.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: telegram-sendmail version
+      description: Output of `telegram-sendmail --version`
+      placeholder: telegram-sendmail 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      description: Output of `python3 --version`
+      placeholder: Python 3.11.9
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and distribution
+      description: Linux distribution name and version (e.g. from `/etc/os-release`)
+      placeholder: Ubuntu 24.04 LTS (Noble Numbat)
+    validations:
+      required: true
+
+  - type: input
+    id: installation_method
+    attributes:
+      label: Installation method
+      description: How was the package installed?
+      placeholder: pipx, pip, local clone, pre-built binary
+    validations:
+      required: true
+
+  - type: dropdown
+    id: execution_context
+    attributes:
+      label: Execution context
+      description: In which mode does the defect manifest?
+      options:
+        - Pipe mode (stdin / cron / logwatch / fail2ban)
+        - SMTP server mode (-bs)
+        - Both modes
+        - Configuration loading
+        - Other (describe in steps to reproduce)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: run_as
+    attributes:
+      label: Process user
+      description: Which user account runs the `sendmail` binary?
+      options:
+        - root
+        - Non-root system user (e.g. www-data, nobody)
+        - Non-root login user
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: >-
+        A clear and concise description of the defect. Include the observed
+        behaviour and the expected behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Provide the minimal sequence of commands or daemon configuration
+        required to reproduce the issue reliably.
+      placeholder: |
+        1. Configure /etc/telegram-sendmail.ini with [options] key X set to Y
+        2. Run: echo "Subject: Test\n\nbody" | telegram-sendmail --console --debug
+        3. Observe error in output
+    validations:
+      required: true
+
+  - type: textarea
+    id: log_output
+    attributes:
+      label: Relevant log output
+      description: >-
+        Paste sanitised log output from `journalctl -t telegram-sendmail` or
+        from `--console --debug` mode. **Remove the bot token and chat ID
+        before posting.**
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: config_snippet
+    attributes:
+      label: Relevant configuration (sanitised)
+      description: >-
+        Paste the relevant sections of the INI config file. Replace the bot
+        token with `REDACTED` and the chat ID with `REDACTED`.
+      render: ini
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: >-
+        Anything else that may be relevant: container environment, systemd
+        unit file, cron configuration, network topology, etc.
+    validations:
+      required: false

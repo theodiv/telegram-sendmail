@@ -1,0 +1,101 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-version:
+    name: Verify version consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Check tag matches package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(python3 -c "
+          import sys
+          sys.path.insert(0, 'src')
+          from telegram_sendmail import __version__
+          print(__version__)
+          ")
+
+          echo "Git tag version : ${TAG_VERSION}"
+          echo "Package version : ${PKG_VERSION}"
+
+          if [ "${TAG_VERSION}" != "${PKG_VERSION}" ]; then
+            echo "ERROR: tag version (${TAG_VERSION}) does not match" \
+                 "package version (${PKG_VERSION})." >&2
+            echo "Update __version__ in src/telegram_sendmail/__init__.py" \
+                 "before tagging the release." >&2
+            exit 1
+          fi
+
+  build-package:
+    name: Build sdist and wheel
+    runs-on: ubuntu-latest
+    needs: verify-version
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install build frontend
+        run: pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Verify package metadata
+        run: |
+          pip install twine
+          twine check dist/*
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-package
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: Upload release to PyPI
+    runs-on: ubuntu-latest
+    environment: pypi
+    needs: build-package
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package
+          path: dist/
+
+      - name: Publish package distribution
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true

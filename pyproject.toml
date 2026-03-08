@@ -1,0 +1,137 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "telegram-sendmail"
+dynamic = ["version"]
+description = "A drop-in sendmail replacement that forwards system emails to Telegram."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Theodosios Divolis" }]
+keywords = ["telegram", "sendmail", "mail", "smtp", "notifications", "sysadmin"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+    "Topic :: System :: Systems Administration",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "html2text>=2024.2.26",
+    "requests>=2.31.0",
+    "urllib3>=1.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "requests-mock>=1.12.1",
+    "mypy>=1.19.1",
+    "pre-commit>=4.5.1",
+    "types-requests>=2.32.4",
+    "ruff>=0.15.2",
+]
+
+[project.scripts]
+telegram-sendmail = "telegram_sendmail.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/theodiv/telegram-sendmail"
+"Bug Tracker" = "https://github.com/theodiv/telegram-sendmail/issues"
+"Changelog" = "https://github.com/theodiv/telegram-sendmail/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/telegram_sendmail/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/telegram_sendmail"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src",
+    "tests",
+    "docs",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "telegram-sendmail.ini.example",
+    "pyproject.toml",
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+mypy_path = "src"
+warn_unreachable = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = "html2text.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+warn_unreachable = false
+warn_return_any = false
+disallow_incomplete_defs = false
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+disable_error_code = ["union-attr", "attr-defined"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["src", "tests"]
+exclude = ["scripts"]
+
+[tool.ruff.lint]
+select = ["D", "E", "F", "I", "PL", "PT", "UP", "W"]
+extend-select = ["D213"]
+ignore = [
+    "D105",
+    "D107",
+    "D205",
+    "D212",
+    "D415",
+    "PLR2004",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "D101",
+    "D102",
+    "E501",
+    "E741",
+    "PLC0415",
+    "S101",
+    "W505",
+]
+
+[tool.ruff.lint.pylint]
+max-returns = 8
+max-args = 6
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 78
+ignore-overlong-task-comments = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=telegram_sendmail --cov-report=term-missing --cov-report=json --cov-fail-under=80"

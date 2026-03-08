@@ -1,0 +1,30 @@
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore
+    labels:
+      - chore
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      ci-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
+    labels:
+      - ci
+    open-pull-requests-limit: 5

@@ -1,0 +1,90 @@
+; telegram-sendmail.ini.example
+;
+; Copy this file to one of the following locations:
+;   System-wide:  /etc/telegram-sendmail.ini
+;   Per-user:     ~/.telegram-sendmail.ini
+;
+; The per-user file takes precedence when both are present.
+;
+; Permissions must be 0600 — the file contains your bot token:
+;   chmod 600 /etc/telegram-sendmail.ini
+;
+; All keys in [options] are optional. Absent, out-of-range, or malformed
+; values fall back to the documented default and a WARNING is logged to
+; syslog. A single bad option never blocks message delivery.
+; ============================================================================
+
+
+[telegram]
+
+; Your Telegram Bot API token.
+; Obtain one from @BotFather: https://core.telegram.org/bots#botfather
+; Required.
+token = 123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+; The Telegram chat ID to deliver messages to.
+; Accepted values: personal chat ID, group ID, or channel ID (prefixed -100).
+; To find your chat ID, send a message to your bot then open:
+;   https://api.telegram.org/bot<token>/getUpdates
+; Required.
+chat_id = -1001234567890
+
+
+[options]
+
+; Directory used to archive every raw email before Telegram delivery.
+; The current user's login name is appended automatically, giving a final
+; path of <spool_dir>/<username> (e.g. /var/mail/root).
+;
+; If the resolved directory is not writable at runtime, the tool falls
+; back to /tmp/.telegram-sendmail-spool/<username> and logs a WARNING.
+; This hidden subdirectory is created automatically with 0700 permissions
+; so that only the owning user can read its contents.
+; Set this to any path writable by the process user — useful in containers
+; where /var/mail does not exist.
+;
+; Default: /var/mail
+spool_dir = /var/mail
+
+; Maximum character length of the email body forwarded to Telegram.
+; Bodies exceeding this limit are truncated at the nearest word boundary
+; and a visible "[…message truncated…]" notice is appended.
+;
+; Valid range: 100 – 4096  |  Default: 3800
+message_max_length = 3800
+
+; Seconds to wait for a line of SMTP input before closing the session.
+; Applies only when running in SMTP server mode (-bs).
+;
+; Valid range: 5 – 300  |  Default: 30
+smtp_timeout = 30
+
+; Seconds to wait for a response from the Telegram API per attempt.
+; This timeout applies to each individual attempt; retried requests each
+; get a fresh timeout window.
+;
+; Valid range: 5 – 60  |  Default: 10
+telegram_timeout = 10
+
+; Number of additional delivery attempts after the first failure.
+; Retries are triggered by HTTP 429 (rate limit) and 5xx server errors.
+; Set to 0 to disable retries and fail immediately on the first error.
+;
+; Valid range: 0 – 10  |  Default: 3
+max_retries = 3
+
+; Exponential backoff multiplier applied between retry attempts.
+; The effective pause before attempt n (1-indexed) is:
+;   backoff_factor × (2 ^ (n − 1)) seconds
+; With the default of 0.5: 0.5 s, 1 s, 2 s, …
+; Set to 0.0 to retry without any delay (not recommended in production).
+;
+; Valid range: 0.0 – 10.0  |  Default: 0.5
+backoff_factor = 0.5
+
+; Send messages silently — recipients receive no sound or banner alert.
+; The message is still delivered and visible in the chat.
+; Accepted values: true, false, yes, no, 1, 0
+;
+; Default: false
+disable_notification = false
