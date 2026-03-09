@@ -466,7 +466,7 @@ def _run_interactive_mode() -> int:
         "This tool is designed to be invoked by system daemons as a sendmail\n"
         "replacement, not run interactively from a terminal.\n"
         "\n"
-        "Pipe mode:  echo 'Subject: Test\\n\\nHello' | telegram-sendmail\n"
+        "Pipe mode:  echo -e 'Subject: Test\\n\\nHello' | telegram-sendmail\n"
         "SMTP mode:  telegram-sendmail -bs\n"
         "Debug mode: echo 'test' | telegram-sendmail --console --debug\n"
         "\n"
