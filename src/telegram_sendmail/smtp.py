@@ -16,6 +16,13 @@ It fires a caller-supplied `on_message` callback with the raw email
 string and the envelope sender. Keeping delivery logic outside this
 module means the state machine can be unit-tested without any network
 or filesystem dependencies.
+
+Internal components
+-------------------
+- `_SMTP`          — namespace class of `Final[str]` wire-format response
+                     strings emitted by `SMTPServer`.
+- `_State`         — `Enum` encoding the RFC 5321 command-sequence lifecycle.
+- `_SessionState`  — mutable per-session context dataclass.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import Final
 
 from telegram_sendmail.config import AppConfig
 from telegram_sendmail.exceptions import SMTPProtocolError
@@ -35,6 +43,36 @@ from telegram_sendmail.exceptions import SMTPProtocolError
 logger = logging.getLogger(__name__)
 
 _MAX_MESSAGE_SIZE: int = 10_485_760  # 10 MiB, advertised via EHLO SIZE extension
+
+
+# --------------------------------------------------------------------------
+# SMTP response constants
+# --------------------------------------------------------------------------
+
+
+class _SMTP:
+    """Wire-format SMTP response strings emitted by `SMTPServer`."""
+
+    BANNER: Final = "220 telegram-bridge ESMTP Ready"
+    EHLO_GREETING: Final = "250-telegram-bridge"
+    EHLO_SIZE: Final = f"250-SIZE {_MAX_MESSAGE_SIZE}"
+    EHLO_ENHANCED: Final = "250-ENHANCEDSTATUSCODES"
+    EHLO_HELP: Final = "250 HELP"
+    OK: Final = "250 2.0.0 Ok"
+    MAIL_OK: Final = "250 2.1.0 Ok"
+    RCPT_OK: Final = "250 2.1.5 Ok"
+    DATA_START: Final = "354 End data with <CRLF>.<CRLF>"
+    BYE: Final = "221 2.0.0 Bye"
+    BAD_SEQUENCE: Final = "503 5.5.1 Bad sequence of commands"
+    MSG_TOO_BIG: Final = "552 5.3.4 Message size exceeds fixed maximum message size"
+    TRANSACTION_FAIL: Final = "554 5.0.0 Transaction failed"
+    TIMEOUT: Final = "421 4.4.2 Connection timed out"
+    INTERNAL_ERROR: Final = "421 4.3.0 Internal server error"
+
+    @staticmethod
+    def queued_as(queue_id: int) -> str:
+        """Format a per-message acceptance reply with the hex queue ID."""
+        return f"250 2.0.0 Ok: queued as {queue_id:012X}"
 
 
 # --------------------------------------------------------------------------
@@ -157,7 +195,7 @@ class SMTPServer:
             pass  # reconfigure not available in all environments (e.g. tests)
 
         session = _SessionState()
-        self._write("220 telegram-bridge ESMTP Ready")
+        self._write(_SMTP.BANNER)
 
         try:
             self._event_loop(session, line_queue)
@@ -165,7 +203,7 @@ class SMTPServer:
             raise
         except Exception as exc:
             logger.error("SMTP session crashed unexpectedly: %s", exc)
-            self._write("421 4.3.0 Internal server error")
+            self._write(_SMTP.INTERNAL_ERROR)
 
     # ------------------------------------------------------------------
     # Event loop
@@ -182,7 +220,7 @@ class SMTPServer:
                 line = line_queue.get(timeout=self._timeout)
             except queue.Empty:
                 logger.warning("SMTP session timed out after %ds", self._timeout)
-                self._write("421 4.4.2 Connection timed out")
+                self._write(_SMTP.TIMEOUT)
                 return
 
             if line is None:
@@ -206,7 +244,7 @@ class SMTPServer:
         """Process one line received while in DATA collection mode."""
         if line == ".":
             if session.oversized:
-                self._write("552 5.3.4 Message size exceeds fixed maximum message size")
+                self._write(_SMTP.MSG_TOO_BIG)
                 logger.warning(
                     "Rejected oversized message from %s",
                     session.envelope_sender or "<>",
@@ -236,14 +274,14 @@ class SMTPServer:
         try:
             self._on_message(raw_email, envelope_sender)
             queue_id = int.from_bytes(os.urandom(6), byteorder="big")
-            self._write(f"250 2.0.0 Ok: queued as {queue_id:012X}")
+            self._write(_SMTP.queued_as(queue_id))
             logger.info(
                 "Message accepted and forwarded (envelope_sender=%s)",
                 envelope_sender or "<>",
             )
         except Exception as exc:
             logger.error("Message delivery failed: %s", exc)
-            self._write("554 5.0.0 Transaction failed")
+            self._write(_SMTP.TRANSACTION_FAIL)
 
         session.state = _State.GREETED
         session.envelope_sender = None
@@ -273,37 +311,37 @@ class SMTPServer:
 
         elif upper.startswith("MAIL FROM"):
             if session.state is not _State.GREETED:
-                self._write("503 5.5.1 Bad sequence of commands")
+                self._write(_SMTP.BAD_SEQUENCE)
             else:
                 self._cmd_mail_from(line, session)
 
         elif upper.startswith("RCPT TO"):
             if session.state is not _State.MAIL_FROM:
-                self._write("503 5.5.1 Bad sequence of commands")
+                self._write(_SMTP.BAD_SEQUENCE)
             else:
                 # All recipients are silently accepted; delivery always goes
                 # to the Telegram chat_id defined in config.
-                self._write("250 2.1.5 Ok")
+                self._write(_SMTP.RCPT_OK)
 
         elif upper.startswith("DATA"):
             if session.state is not _State.MAIL_FROM:
-                self._write("503 5.5.1 Bad sequence of commands")
+                self._write(_SMTP.BAD_SEQUENCE)
             else:
                 session.state = _State.DATA
                 session.reset_buffer()
-                self._write("354 End data with <CRLF>.<CRLF>")
+                self._write(_SMTP.DATA_START)
 
         elif upper.startswith("RSET"):
             session.state = _State.GREETED
             session.envelope_sender = None
             session.reset_buffer()
-            self._write("250 2.0.0 Ok")
+            self._write(_SMTP.OK)
 
         elif upper.startswith("NOOP"):
-            self._write("250 2.0.0 Ok")
+            self._write(_SMTP.OK)
 
         elif upper.startswith("QUIT"):
-            self._write("221 2.0.0 Bye")
+            self._write(_SMTP.BYE)
             logger.info("SMTP session closed by client")
             return True
 
@@ -311,21 +349,21 @@ class SMTPServer:
             # Return 250 for unrecognised commands rather than 502 to avoid
             # breaking daemons that probe for extensions before sending mail.
             logger.debug("Unrecognised SMTP command (ignored): %r", line)
-            self._write("250 2.0.0 Ok")
+            self._write(_SMTP.OK)
 
         return False
 
     def _cmd_ehlo(self, session: _SessionState) -> None:
         session.state = _State.GREETED
-        self._write("250-telegram-bridge")
-        self._write(f"250-SIZE {_MAX_MESSAGE_SIZE}")
-        self._write("250-ENHANCEDSTATUSCODES")
-        self._write("250 HELP")
+        self._write(_SMTP.EHLO_GREETING)
+        self._write(_SMTP.EHLO_SIZE)
+        self._write(_SMTP.EHLO_ENHANCED)
+        self._write(_SMTP.EHLO_HELP)
 
     def _cmd_mail_from(self, line: str, session: _SessionState) -> None:
         session.state = _State.MAIL_FROM
         session.envelope_sender = self._parse_address(line)
-        self._write("250 2.1.0 Ok")
+        self._write(_SMTP.MAIL_OK)
 
     # ------------------------------------------------------------------
     # Helpers
