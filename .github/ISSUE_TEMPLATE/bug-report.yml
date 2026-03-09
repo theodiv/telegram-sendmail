@@ -3,7 +3,7 @@ description: >-
   Report a defect in telegram-sendmail. Security vulnerabilities must be
   reported via GitHub's private advisory feature, not this form.
 title: "bug: <short description>"
-labels: ["fix", "triage"]
+labels: ["bug", "triage"]
 body:
   - type: checkboxes
     id: preflight
@@ -12,7 +12,7 @@ body:
       options:
         - label: >-
             The issue is not already reported in
-            [open issues](https://github.com/theodiv/telegram-sendmail/issues).
+            [open issues](https://github.com/theodiv/telegram-sendmail/issues?q=is%3Aissue+state%3Aopen).
           required: true
         - label: >-
             The output of `journalctl -t telegram-sendmail --since "1 hour ago"`
@@ -28,7 +28,7 @@ body:
     attributes:
       label: telegram-sendmail version
       description: Output of `telegram-sendmail --version`
-      placeholder: telegram-sendmail 0.1.0
+      placeholder: telegram-sendmail 1.0.0
     validations:
       required: true
 
@@ -55,7 +55,7 @@ body:
     attributes:
       label: Installation method
       description: How was the package installed?
-      placeholder: pipx, pip, local clone, pre-built binary
+      placeholder: Local clone, pre-built binary, pip or pipx
     validations:
       required: true
 
@@ -80,7 +80,7 @@ body:
       description: Which user account runs the `sendmail` binary?
       options:
         - root
-        - Non-root system user (e.g. www-data, nobody)
+        - Non-root system user (e.g. www-data)
         - Non-root login user
     validations:
       required: true
@@ -92,6 +92,9 @@ body:
       description: >-
         A clear and concise description of the defect. Include the observed
         behaviour and the expected behaviour.
+      placeholder: |
+        telegram-sendmail exits with code 1 after processing a cron email.
+        It should successfully deliver the message to Telegram instead.
     validations:
       required: true
 
@@ -117,6 +120,8 @@ body:
         Paste sanitised log output from `journalctl -t telegram-sendmail` or
         from `--console --debug` mode. **Remove the bot token and chat ID
         before posting.**
+      placeholder: |
+        Mar 09 14:23:01 hostname telegram-sendmail[1234]: ERROR ...
       render: text
     validations:
       required: false
@@ -127,7 +132,11 @@ body:
       label: Relevant configuration (sanitised)
       description: >-
         Paste the relevant sections of the INI config file. Replace the bot
-        token with `REDACTED` and the chat ID with `REDACTED`.
+        token and chat ID with `REDACTED`.
+      placeholder: |
+        [telegram]
+        token = REDACTED
+        chat_id = REDACTED
       render: ini
     validations:
       required: false
@@ -139,5 +148,7 @@ body:
       description: >-
         Anything else that may be relevant: container environment, systemd
         unit file, cron configuration, network topology, etc.
+      placeholder: |
+        Running inside a systemd unit; network access is via a corporate proxy.
     validations:
       required: false
