@@ -1,0 +1,41 @@
+name: Normalize issue fields
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  normalize:
+    name: Replace empty fields with N/A
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Fill empty optional fields
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const body = context.payload.issue.body;
+            if (!body) return;
+
+            const base = body.replaceAll('\r\n', '\n');
+
+            let updated = base;
+            updated = updated.replaceAll('_No response_', '_N/A_');
+            updated = updated.replace(/```\w*\n\s*```/g, '_N/A_');
+            updated = updated.replace(
+              /(### [^\n]+\n)\s+(?=### |$)/g,
+              '$1\n_N/A_\n\n',
+            );
+
+            if (updated === base) return;
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: updated,
+            });
