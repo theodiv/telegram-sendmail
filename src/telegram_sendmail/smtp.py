@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import signal
 import sys
 import threading
 from collections.abc import Callable
@@ -43,6 +44,11 @@ from telegram_sendmail.exceptions import SMTPProtocolError
 logger = logging.getLogger(__name__)
 
 _MAX_MESSAGE_SIZE: int = 10_485_760  # 10 MiB, advertised via EHLO SIZE extension
+
+# Pushed into line_queue by signal handlers to trigger graceful shutdown.
+# The \x00 prefix cannot arrive from stdin in text mode, preventing
+# collision with any real SMTP command line.
+_SHUTDOWN_SENTINEL: Final = "\x00__SIGNAL_SHUTDOWN__"
 
 
 # --------------------------------------------------------------------------
@@ -67,6 +73,7 @@ class _SMTP:
     MSG_TOO_BIG: Final = "552 5.3.4 Message size exceeds fixed maximum message size"
     TRANSACTION_FAIL: Final = "554 5.0.0 Transaction failed"
     TIMEOUT: Final = "421 4.4.2 Connection timed out"
+    SHUTDOWN: Final = "421 4.4.2 Service shutting down"
     INTERNAL_ERROR: Final = "421 4.3.0 Internal server error"
 
     @staticmethod
@@ -172,7 +179,10 @@ class SMTPServer:
     def run(self) -> None:
         """
         Start the SMTP dialogue. Blocks until the session ends (QUIT,
-        EOF on stdin, or timeout).
+        EOF on stdin, timeout, or shutdown signal).
+
+        SIGTERM and SIGINT are intercepted for the duration of the session
+        so that a process manager receives a proper `421` shutdown response.
 
         Raises:
             SMTPProtocolError: If an unrecoverable I/O error occurs on
@@ -194,6 +204,11 @@ class SMTPServer:
         except AttributeError:
             pass  # reconfigure not available in all environments (e.g. tests)
 
+        prev_signals = {}
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            prev_signals[sig] = signal.getsignal(sig)
+            signal.signal(sig, lambda *_: line_queue.put(_SHUTDOWN_SENTINEL))
+
         session = _SessionState()
         self._write(_SMTP.BANNER)
 
@@ -204,6 +219,11 @@ class SMTPServer:
         except Exception as exc:
             logger.error("SMTP session crashed unexpectedly: %s", exc)
             self._write(_SMTP.INTERNAL_ERROR)
+        finally:
+            # Restore original signal handlers so the caller's environment
+            # stays unaffected.
+            signal.signal(signal.SIGTERM, prev_signals[signal.SIGTERM])
+            signal.signal(signal.SIGINT, prev_signals[signal.SIGINT])
 
     # ------------------------------------------------------------------
     # Event loop
@@ -225,6 +245,11 @@ class SMTPServer:
 
             if line is None:
                 logger.info("SMTP stdin closed (EOF)")
+                return
+
+            if line is _SHUTDOWN_SENTINEL:
+                logger.info("SMTP session terminated by signal")
+                self._write(_SMTP.SHUTDOWN)
                 return
 
             line = line.rstrip("\r\n")

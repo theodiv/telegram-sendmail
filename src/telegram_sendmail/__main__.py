@@ -393,9 +393,6 @@ def _run_smtp_mode(config: AppConfig) -> int:
         server = SMTPServer(config, on_message=_make_smtp_handler(config))
         server.run()
         return _EX_OK
-    except KeyboardInterrupt:
-        logger.info("SMTP session interrupted by user")
-        return _EX_OK
     except TelegramSendmailError as exc:
         logger.error("%s", exc)
         return _EX_ERROR

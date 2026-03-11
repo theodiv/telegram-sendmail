@@ -62,6 +62,10 @@ Coverage targets
     - A second complete message can be delivered in the same session after RSET
     - Two complete messages can be delivered in a single session without an intervening RSET
 
+`SMTPServer` — signal-triggered graceful shutdown
+    - SIGTERM, SIGINT and shutdown sentinel produce a "421" shutdown response
+    - Signal handlers are restored to their original values after a QUIT or session crash
+
 Design notes
 ------------
 - All integration tests use the `_run_session` module-level helper, which
@@ -73,18 +77,26 @@ Design notes
 - The app_config fixture has smtp_timeout=5. Because StringIO input is
   exhausted nearly instantly, the event loop never waits anywhere near the
   timeout threshold, keeping all tests fast.
+- Both real-signal and sentinel tests (`_shutdown_reader`) exist because
+  real-signal delivery depends on thread scheduling and can be flaky in
+  resource-constrained CI environments.
 """
 
 from __future__ import annotations
 
 import io
+import os
+import signal
 import sys
+import threading
+import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 import pytest
 
 from telegram_sendmail.config import AppConfig
-from telegram_sendmail.smtp import SMTPServer
+from telegram_sendmail.smtp import _SHUTDOWN_SENTINEL, SMTPServer
 
 # --------------------------------------------------------------------------
 # Helpers
@@ -573,3 +585,82 @@ class TestSMTPSessionReset:
         second_raw = smtp_callback.call_args_list[1].args[0]
         assert "first message" in first_raw
         assert "second message" in second_raw
+
+
+# --------------------------------------------------------------------------
+# Signal-triggered graceful shutdown
+# --------------------------------------------------------------------------
+
+
+class TestSMTPSignalShutdown:
+    @staticmethod
+    def _shutdown_reader(signum: int | None = None) -> Callable[[Any], None]:
+        """Return a _stdin_reader that sends a shutdown signal or sentinel after EHLO."""
+
+        def _reader(q: Any) -> None:
+            q.put("EHLO Test\r\n")
+            if signum is not None:
+                time.sleep(0.05)
+                os.kill(os.getpid(), signum)
+                threading.Event().wait()
+            else:
+                q.put(_SHUTDOWN_SENTINEL)
+
+        return _reader
+
+    @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+    def test_shutdown_signal_produces_421_shutdown_response(
+        self,
+        signum: int,
+        app_config: AppConfig,
+        smtp_callback: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setattr(
+            SMTPServer, "_stdin_reader", staticmethod(self._shutdown_reader(signum))
+        )
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        output = _run_session(server, [], monkeypatch)
+        assert "Service shutting down" in output
+        smtp_callback.assert_not_called()
+
+    def test_shutdown_sentinel_produces_421_shutdown_response(
+        self,
+        app_config: AppConfig,
+        smtp_callback: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setattr(
+            SMTPServer, "_stdin_reader", staticmethod(self._shutdown_reader())
+        )
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        output = _run_session(server, [], monkeypatch)
+        assert "Service shutting down" in output
+        smtp_callback.assert_not_called()
+
+    def test_signal_handlers_restored_after_normal_quit(
+        self,
+        app_config: AppConfig,
+        smtp_callback: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        prev_term = signal.getsignal(signal.SIGTERM)
+        prev_int = signal.getsignal(signal.SIGINT)
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        _run_session(server, ["QUIT"], monkeypatch)
+        assert signal.getsignal(signal.SIGTERM) is prev_term
+        assert signal.getsignal(signal.SIGINT) is prev_int
+
+    def test_signal_handlers_restored_after_session_crash(
+        self,
+        app_config: AppConfig,
+        smtp_callback: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        smtp_callback.side_effect = RuntimeError("crash")
+        prev_term = signal.getsignal(signal.SIGTERM)
+        prev_int = signal.getsignal(signal.SIGINT)
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        _run_session(server, _commands("DATA", "body", "."), monkeypatch)
+        assert signal.getsignal(signal.SIGTERM) is prev_term
+        assert signal.getsignal(signal.SIGINT) is prev_int
