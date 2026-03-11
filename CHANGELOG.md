@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Send a `421` shutdown response on SIGTERM and SIGINT in `-bs` mode instead
-  of terminating silently. (#3)
+  of terminating silently. ([#3](https://github.com/theodiv/telegram-sendmail/issues/3))
 
 ## [1.0.0] - 2026-03-08
 
