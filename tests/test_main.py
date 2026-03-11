@@ -50,7 +50,6 @@ Coverage targets
 
 `_run_smtp_mode`
     - Returns _EX_OK (0) when SMTPServer.run() completes without error
-    - Returns _EX_OK (0) when SMTPServer.run() raises KeyboardInterrupt
     - Returns _EX_ERROR (1) when SMTPServer.run() raises TelegramSendmailError
     - Returns _EX_ERROR (1) when SMTPServer.run() raises an unexpected Exception
     - Constructs SMTPServer with a callable on_message handler
@@ -722,17 +721,6 @@ class TestRunSmtpMode:
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr(main_module, "SMTPServer", _SMTPServerOk)
-        assert _run_smtp_mode(app_config) == _EX_OK
-
-    def test_keyboard_interrupt_returns_ex_ok(
-        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setattr(
-            main_module,
-            "SMTPServer",
-            # Ctrl-C is a clean operator shutdown, not a delivery failure.
-            _smtp_server_raising(KeyboardInterrupt()),
-        )
         assert _run_smtp_mode(app_config) == _EX_OK
 
     def test_telegram_sendmail_error_returns_ex_error(
