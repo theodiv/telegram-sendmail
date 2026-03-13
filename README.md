@@ -46,6 +46,8 @@ Two modes of operation are supported:
   `-i`, `-oi`, plus silent acceptance of positional recipient arguments
 - Configurable HTTP retry strategy with exponential backoff for resilience
   against transient Telegram API failures
+- Validates configuration and Telegram connectivity via `--probe` without
+  reading from stdin, suitable for provisioning pipelines and smoke tests
 - `EX_TEMPFAIL` (exit code 75) signalling on HTTP 429/5xx so MTA-aware daemons
   re-queue and retry automatically
 - Distributed as a standalone binary with no runtime dependencies via the
@@ -254,6 +256,9 @@ telegram-sendmail -bs
 
 # Interactive debugging with console logging
 echo "Hello" | telegram-sendmail --console --debug
+
+# Dispatch a test message to verify configuration and delivery
+telegram-sendmail --probe
 ```
 
 ## Exit Codes
@@ -284,6 +289,20 @@ journalctl -t telegram-sendmail --since "1 hour ago"
 ```
 
 On systems without `journald`, check `/var/log/mail.log` or `/var/log/syslog`.
+
+### Validating a new installation
+
+The `--probe` flag verifies configuration syntax, bot token validity, and
+`chat_id` reachability in a single command without reading from stdin:
+
+```bash
+telegram-sendmail --probe --console --debug
+```
+
+Exit code `0` confirms end-to-end connectivity. `78` indicates a config
+error, `75` a transient network failure, and `1` a permanent API rejection
+(bad token, unreachable chat). Suitable for Ansible tasks, cloud-init
+`runcmd` assertions, and manual post-install smoke tests.
 
 ### Common issues
 

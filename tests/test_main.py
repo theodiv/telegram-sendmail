@@ -45,12 +45,22 @@ Coverage targets
       or an unexpected Exception
     - Constructs SMTPServer with a callable on_message handler
 
+`_run_probe_mode`
+    - Returns _EX_OK (0) when test message is delivered successfully
+    - Sends _PROBE_MESSAGE as the text payload and to the configured chat_id
+    - Returns _EX_ERROR (1) when TelegramAPIError has a non-retriable or no status code
+    - Returns _EX_ERROR (1) when TelegramSendmailError or an unexpected Exception is raised
+    - Returns _EX_TEMPFAIL (75) when TelegramAPIError has a retriable status code (429, 500)
+    - Does not read from stdin and does not write to the spool file
+    - Logs success at INFO level and an "EX_TEMPFAIL" WARNING on transient failure
+
 `_run_interactive_mode`
     - Returns _EX_ERROR (1)
     - Writes all output to sys.stderr (stdout remains empty)
     - Output contains the package version string
     - Output mentions "Pipe mode:" with a usage example
     - Output mentions "SMTP mode:" and the -bs flag
+    - Output mentions "Probe mode:" and the --probe flag
     - Output mentions "--help" to direct the operator to full documentation
 
 `main`
@@ -59,6 +69,8 @@ Coverage targets
     - Calls sys.exit(0) when pipe-mode delivery succeeds with non-TTY stdin
     - Invokes SMTPServer (via _run_smtp_mode) and calls sys.exit(0) when the -bs flag
       is present and the SMTP session completes cleanly
+    - Calls sys.exit(0) when --probe flag is present and probe succeeds
+    - --probe takes dispatch priority over -bs if both are present
     - Calls sys.exit(75) when pipe-mode hits HTTP 429 rate limit
     - Installs a _TokenRedactFilter on every root-logger handler after config is loaded
     - Logs ConfigurationError at ERROR level before exiting with code 78
@@ -83,9 +95,10 @@ from __future__ import annotations
 import io
 import logging
 import sys
-from typing import Any
+from typing import Any, TextIO
 
 import pytest
+import requests_mock as requests_mock_module
 
 import telegram_sendmail.__main__ as main_module
 import telegram_sendmail.config as cfg_module
@@ -96,10 +109,12 @@ from telegram_sendmail.__main__ import (
     _EX_OK,
     _EX_TEMPFAIL,
     _MAX_PIPE_SIZE,
+    _PROBE_MESSAGE,
     _bounded_stdin_read,
     _deliver,
     _run_interactive_mode,
     _run_pipe_mode,
+    _run_probe_mode,
     _run_smtp_mode,
     _TokenRedactFilter,
     main,
@@ -567,7 +582,7 @@ class TestRunPipeMode:
         monkeypatch.setattr(
             main_module,
             "_deliver",
-            self._fail_with(TelegramAPIError("bad Request", status_code=400)),
+            self._fail_with(TelegramAPIError("bad request", status_code=400)),
         )
         monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_ERROR
@@ -659,7 +674,7 @@ class TestRunPipeMode:
         monkeypatch.setattr(
             main_module,
             "_deliver",
-            self._fail_with(TelegramAPIError("Too Many Requests", status_code=429)),
+            self._fail_with(TelegramAPIError("too many requests", status_code=429)),
         )
         monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.__main__"):
@@ -736,6 +751,177 @@ class TestRunSmtpMode:
 
 
 # --------------------------------------------------------------------------
+# _run_probe_mode — config validation and Telegram connectivity check
+# --------------------------------------------------------------------------
+
+
+class TestRunProbeMode:
+    class _SpyStdin:
+        """stdin stub that records whether read() was called."""
+
+        def __init__(self, stdin: TextIO) -> None:
+            self._original_stdin = stdin
+            self._read_called = False
+
+        def read(self, *args: Any) -> str:
+            self._read_called = True
+            return ""
+
+        def isatty(self) -> bool:
+            return self._original_stdin.isatty()
+
+    @staticmethod
+    def _client_raising(exc: BaseException) -> type[Any]:
+        """Return a stub TelegramClient class whose send() raises exc."""
+
+        class _Stub:
+            def __init__(self, config: AppConfig) -> None:
+                pass
+
+            def __enter__(self) -> _Stub:
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                pass
+
+            def send(self, text: str) -> None:
+                raise exc
+
+        return _Stub
+
+    def test_success_returns_ex_ok(
+        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
+        assert _run_probe_mode(app_config) == _EX_OK
+
+    def test_sends_probe_message_text(
+        self,
+        app_config: AppConfig,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        _run_probe_mode(app_config)
+        assert mock_telegram_ok.last_request.json()["text"] == _PROBE_MESSAGE
+
+    def test_sends_to_configured_chat_id(
+        self,
+        app_config: AppConfig,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        _run_probe_mode(app_config)
+        assert mock_telegram_ok.last_request.json()["chat_id"] == app_config.chat_id
+
+    def test_telegram_api_error_non_retriable_returns_ex_error(
+        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            main_module,
+            "TelegramClient",
+            self._client_raising(TelegramAPIError("bad request", status_code=400)),
+        )
+        assert _run_probe_mode(app_config) == _EX_ERROR
+
+    def test_telegram_api_error_429_returns_ex_tempfail(
+        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            main_module,
+            "TelegramClient",
+            self._client_raising(TelegramAPIError("rate limited", status_code=429)),
+        )
+        assert _run_probe_mode(app_config) == _EX_TEMPFAIL
+
+    def test_telegram_api_error_500_returns_ex_tempfail(
+        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            main_module,
+            "TelegramClient",
+            self._client_raising(TelegramAPIError("server error", status_code=500)),
+        )
+        assert _run_probe_mode(app_config) == _EX_TEMPFAIL
+
+    def test_telegram_api_error_no_status_returns_ex_error(
+        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            main_module,
+            "TelegramClient",
+            self._client_raising(TelegramAPIError("connection refused")),
+        )
+        assert _run_probe_mode(app_config) == _EX_ERROR
+
+    def test_telegram_sendmail_error_returns_ex_error(
+        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            main_module,
+            "TelegramClient",
+            self._client_raising(TelegramSendmailError("generic failure")),
+        )
+        assert _run_probe_mode(app_config) == _EX_ERROR
+
+    def test_unexpected_exception_returns_ex_error(
+        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            main_module,
+            "TelegramClient",
+            self._client_raising(RuntimeError("unexpected error")),
+        )
+        assert _run_probe_mode(app_config) == _EX_ERROR
+
+    def test_does_not_read_stdin(
+        self,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        spy_stdin = self._SpyStdin(sys.stdin)
+        monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
+        monkeypatch.setattr(sys, "stdin", spy_stdin)
+        _run_probe_mode(app_config)
+        assert not spy_stdin._read_called
+
+    def test_does_not_write_to_spool(
+        self,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
+        _run_probe_mode(app_config)
+        assert not app_config.spool_path.exists()
+
+    def test_logs_info_on_success(
+        self,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
+        with caplog.at_level(logging.INFO, logger="telegram_sendmail.__main__"):
+            _run_probe_mode(app_config)
+        assert any("Probe succeeded" in r.message for r in caplog.records)
+
+    def test_logs_warning_on_transient_failure(
+        self,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        monkeypatch.setattr(
+            main_module,
+            "TelegramClient",
+            self._client_raising(TelegramAPIError("rate limited", status_code=429)),
+        )
+        with caplog.at_level(logging.WARNING, logger="telegram_sendmail.__main__"):
+            _run_probe_mode(app_config)
+        assert any(
+            "EX_TEMPFAIL" in r.message and r.levelname == "WARNING"
+            for r in caplog.records
+        )
+
+
+# --------------------------------------------------------------------------
 # _run_interactive_mode — stderr output and return value
 # --------------------------------------------------------------------------
 
@@ -770,6 +956,14 @@ class TestRunInteractiveMode:
         assert "SMTP mode:" in err
         assert "-bs" in err
 
+    def test_stderr_output_mentions_probe_mode_and_probe_flag(
+        self, capsys: pytest.CaptureFixture[str]
+    ):
+        _run_interactive_mode()
+        err = capsys.readouterr().err
+        assert "Probe mode:" in err
+        assert "--probe" in err
+
     def test_stderr_output_directs_to_help_flag(
         self, capsys: pytest.CaptureFixture[str]
     ):
@@ -798,7 +992,7 @@ class TestMainDispatch:
     @staticmethod
     def _raise_rate_limit(raw: str, sender: Any, config: Any):
         """Simulate Telegram API rate limit by raising TelegramAPIError with 429."""
-        raise TelegramAPIError("Too Many Requests", status_code=429)
+        raise TelegramAPIError("too many requests", status_code=429)
 
     def test_configuration_error_exits_with_code_78(
         self,
@@ -850,6 +1044,35 @@ class TestMainDispatch:
         monkeypatch.setattr(main_module, "SMTPServer", _SMTPServerOk)
         with pytest.raises(SystemExit) as exc_info:
             main()
+        assert exc_info.value.code == _EX_OK
+
+    def test_probe_flag_invokes_probe_mode_and_exits_0(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        patched_config_loader: AppConfig,
+        no_setup_logging: None,
+    ):
+        monkeypatch.setattr(sys, "argv", ["telegram-sendmail", "--probe"])
+        # stdin is a TTY; probe must not fall through to interactive mode.
+        monkeypatch.setattr(sys, "stdin", self._FakeTTY())
+        monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == _EX_OK
+
+    def test_probe_flag_takes_priority_over_bs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        patched_config_loader: AppConfig,
+        no_setup_logging: None,
+    ):
+        monkeypatch.setattr(sys, "argv", ["telegram-sendmail", "-bs", "--probe"])
+        monkeypatch.setattr(sys, "stdin", self._FakeTTY())
+        monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
+        monkeypatch.setattr(main_module, "SMTPServer", RuntimeError, True)
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        # --probe wins over -bs; exit 0 from probe, not 1 from SMTP.
         assert exc_info.value.code == _EX_OK
 
     def test_pipe_mode_rate_limit_exits_75_via_main(

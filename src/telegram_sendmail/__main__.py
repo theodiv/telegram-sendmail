@@ -60,6 +60,12 @@ _EX_CONFIG = 78
 _MAX_PIPE_SIZE: int = 10_485_760  # 10 MiB
 _PIPE_READ_CHUNK: int = 65_536
 
+# Sent as a test message when invoked with `--probe` to verify that the
+# delivery pipeline is functional.
+_PROBE_MESSAGE: str = (
+    "🟢 <b>telegram-sendmail probe</b>\n\nConfiguration OK, delivery verified."
+)
+
 
 # --------------------------------------------------------------------------
 # Delivery pipeline
@@ -318,6 +324,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="set log level to DEBUG",
     )
     parser.add_argument(
+        "--probe",
+        action="store_true",
+        help=("validate configuration and send a test message to Telegram chat"),
+    )
+    parser.add_argument(
         "--help",
         action="help",
         help="display this help message and exit",
@@ -341,8 +352,10 @@ def main() -> None:
     """
     CLI entry point registered under `[project.scripts]` in `pyproject.toml`.
 
-    Dispatches to one of three operating modes:
+    Dispatches to one of four operating modes:
 
+    - **Probe mode** (`--probe`): validates the configuration and sends a
+      test message to the configured `chat_id`. No stdin, no spool.
     - **SMTP mode** (`-bs`): runs `SMTPServer.run()` which speaks the
       SMTP protocol on `stdin`/`stdout`.
     - **Pipe mode** (stdin is not a TTY): reads a raw email from `stdin`
@@ -378,12 +391,47 @@ def main() -> None:
     for handler in logging.root.handlers:
         handler.addFilter(token_filter)
 
-    if args.bs:
+    if args.probe:
+        sys.exit(_run_probe_mode(config))
+    elif args.bs:
         sys.exit(_run_smtp_mode(config))
     elif not sys.stdin.isatty():
         sys.exit(_run_pipe_mode(args.sender, args.subject, config))
     else:
         sys.exit(_run_interactive_mode())
+
+
+def _run_probe_mode(config: AppConfig) -> int:
+    """
+    Validate configuration and verify Telegram API connectivity.
+
+    Sends a short test message to the configured `chat_id` without reading
+    from stdin or writing to the spool. Exit code mapping mirrors the normal
+    delivery path so provisioning tools or smoke tests get the same signals.
+    """
+    logger.info("Probe mode: sending test message to chat_id %s", config.chat_id)
+    try:
+        with TelegramClient(config) as client:
+            client.send(_PROBE_MESSAGE)
+        logger.info("Probe succeeded")
+        return _EX_OK
+    except TelegramAPIError as exc:
+        status = getattr(exc, "status_code", None)
+        if status is not None and status in _RETRY_STATUS_CODES:
+            logger.warning(
+                "Probe hit transient Telegram API failure (HTTP %d); "
+                "signalling EX_TEMPFAIL",
+                status,
+            )
+            return _EX_TEMPFAIL
+        logger.error("Probe failed: %s", exc)
+        return _EX_ERROR
+    except TelegramSendmailError as exc:
+        logger.error("Probe failed: %s", exc)
+        return _EX_ERROR
+    except Exception as exc:
+        logger.error("Unexpected error during probe: %s", exc)
+        return _EX_ERROR
 
 
 def _run_smtp_mode(config: AppConfig) -> int:
@@ -465,6 +513,7 @@ def _run_interactive_mode() -> int:
         "\n"
         "Pipe mode:  echo -e 'Subject: Test\\n\\nHello' | telegram-sendmail\n"
         "SMTP mode:  telegram-sendmail -bs\n"
+        "Probe mode: telegram-sendmail --probe\n"
         "Debug mode: echo 'test' | telegram-sendmail --console --debug\n"
         "\n"
         "For full documentation: telegram-sendmail --help",
