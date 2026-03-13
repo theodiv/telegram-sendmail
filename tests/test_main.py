@@ -4,10 +4,8 @@ Tests for telegram_sendmail.__main__.
 Coverage targets
 ----------------
 `_bounded_stdin_read`
-    - Returns full content when input is under `_MAX_PIPE_SIZE`
-    - Returns full content when input is exactly `_MAX_PIPE_SIZE` characters
-    - Truncates oversized input to exactly `_MAX_PIPE_SIZE` characters
-    - Emits a WARNING when input exceeds `_MAX_PIPE_SIZE`
+    - Returns full content when input is under or exactly at `_MAX_PIPE_SIZE`
+    - Truncates oversized input to exactly `_MAX_PIPE_SIZE` characters and emits a WARNING
     - Emits no WARNING when input is within the limit
     - Returns an empty string for empty stdin
 
@@ -18,13 +16,10 @@ Coverage targets
     - Always returns True regardless of whether redaction occurred
 
 `_deliver`
-    - Invokes all three pipeline stages (spool -> parse -> send) in order on the
-      happy path
+    - Invokes all three pipeline stages (spool -> parse -> send) in order on the happy path
     - Catches SpoolError without propagating it so delivery continues
-    - Invokes EmailParser.parse after a SpoolError is raised by the spooler
-    - Invokes TelegramClient.send even when the spool write fails
-    - Logs a WARNING via the spool logger before raising SpoolError (mirroring
-      the real MailSpooler.write contract)
+    - Invokes EmailParser.parse and TelegramClient.send even when the spool write fails
+    - Logs a WARNING via the spool logger before raising SpoolError
     - Passes the text returned by format_for_telegram directly to send()
     - Propagates ParsingError raised by EmailParser.parse
     - Propagates TelegramAPIError raised by TelegramClient.send
@@ -32,26 +27,22 @@ Coverage targets
 `_run_pipe_mode`
     - Returns _EX_OK (0) when _deliver completes without error
     - Returns _EX_ERROR (1) when sys.stdin.read() itself raises
-    - Returns _EX_ERROR (1) when _deliver raises ParsingError
-    - Returns _EX_TEMPFAIL (75) when _deliver raises TelegramAPIError with
-      a retriable status_code (429, 500, 502)
-    - Returns _EX_ERROR (1) when _deliver raises TelegramAPIError with a
-      non-retriable status code
-    - Returns _EX_ERROR (1) when _deliver raises TelegramAPIError with
-      status_code == None (no status available)
-    - Returns _EX_ERROR (1) when _deliver raises a TelegramSendmailError
-    - Returns _EX_ERROR (1) when _deliver raises an unexpected bare Exception
-    - Prepends "Subject: <override>" when subject_override is set and the
-      raw email contains no Subject header
-    - Does NOT modify the raw email when the email already contains a Subject
-      header (case-insensitive check against the first 500 bytes)
-    - Does NOT modify the raw email when subject_override is None
+    - Returns _EX_ERROR (1) when _deliver raises ParsingError, TelegramSendmailError,
+      or an unexpected Exception
+    - Returns _EX_ERROR (1) when _deliver raises TelegramAPIError with a non-retriable
+      or no status code (status_code == None)
+    - Returns _EX_TEMPFAIL (75) when _deliver raises TelegramAPIError with a retriable
+      status code (429, 500, 502)
+    - Prepends "Subject: <override>" when subject_override is set and the raw email
+      contains no Subject header
+    - Does NOT modify the raw email when it already contains a Subject header
+      (case-insensitive) or when subject_override is None
     - Logs a WARNING before returning _EX_TEMPFAIL on any retriable status
 
 `_run_smtp_mode`
     - Returns _EX_OK (0) when SMTPServer.run() completes without error
     - Returns _EX_ERROR (1) when SMTPServer.run() raises TelegramSendmailError
-    - Returns _EX_ERROR (1) when SMTPServer.run() raises an unexpected Exception
+      or an unexpected Exception
     - Constructs SMTPServer with a callable on_message handler
 
 `_run_interactive_mode`
@@ -66,11 +57,10 @@ Coverage targets
     - Calls sys.exit(78) when ConfigLoader.load() raises ConfigurationError
     - Calls sys.exit(1) when sys.stdin.isatty() returns True (interactive guard)
     - Calls sys.exit(0) when pipe-mode delivery succeeds with non-TTY stdin
-    - Invokes SMTPServer (via _run_smtp_mode) and calls sys.exit(0) when the
-      -bs flag is present and the SMTP session completes cleanly
+    - Invokes SMTPServer (via _run_smtp_mode) and calls sys.exit(0) when the -bs flag
+      is present and the SMTP session completes cleanly
     - Calls sys.exit(75) when pipe-mode hits HTTP 429 rate limit
-    - Installs a _TokenRedactFilter on every root-logger handler after
-      config is loaded (verified in --debug mode)
+    - Installs a _TokenRedactFilter on every root-logger handler after config is loaded
     - Logs ConfigurationError at ERROR level before exiting with code 78
 
 Design notes
@@ -136,13 +126,6 @@ _FAKE_PARSED = ParsedEmail(
 )
 
 _FAKE_FORMATTED = "<b>📬 New Notification</b>\nFormatted body"
-
-
-class _FakeTTY(io.StringIO):
-    """StringIO whose isatty() returns True, simulating a real terminal."""
-
-    def isatty(self) -> bool:
-        return True
 
 
 class _SpoolerOk:
@@ -216,35 +199,10 @@ class _SMTPServerOk:
         pass
 
 
-class _SMTPServerCapturing:
-    """SMTPServer stub that stores the on_message callback for inspection."""
-
-    captured_on_message: Any = None
-
-    def __init__(self, config: AppConfig, on_message: Any) -> None:
-        _SMTPServerCapturing.captured_on_message = on_message
-
-    def run(self) -> None:
-        pass
-
-
-def _smtp_server_raising(exc: BaseException) -> type[Any]:
-    """Return a stub SMTPServer class whose run() raises exc."""
-
-    class _Stub:
-        def __init__(self, cfg: AppConfig, on_message: Any) -> None:
-            pass
-
-        def run(self) -> None:
-            raise exc
-
-    return _Stub
-
-
 @pytest.fixture
 def no_setup_logging(monkeypatch: pytest.MonkeyPatch):
     """Prevent _setup_logging from attaching handlers to logging.root."""
-    monkeypatch.setattr(main_module, "_setup_logging", lambda console, debug: None)
+    monkeypatch.setattr(main_module, "_setup_logging", lambda **_: None)
 
 
 # --------------------------------------------------------------------------
@@ -297,7 +255,7 @@ class TestBoundedStdinRead:
         assert not any(r.levelname == "WARNING" for r in caplog.records)
 
     def test_empty_stdin_returns_empty_string(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+        monkeypatch.setattr(sys, "stdin", io.StringIO())
         assert _bounded_stdin_read() == ""
 
 
@@ -381,7 +339,7 @@ class TestDeliverPipeline:
     class _TrackingSpooler:
         """Records each write attempt by appending "spool" to _stages."""
 
-        def __init__(self, cfg: AppConfig) -> None:
+        def __init__(self, config: AppConfig) -> None:
             pass
 
         def write(self, raw: str) -> None:
@@ -390,7 +348,7 @@ class TestDeliverPipeline:
     class _TrackingParser:
         """Records each parse call via _stages; optionally raises."""
 
-        def __init__(self, cfg: AppConfig, *, failing: bool = False) -> None:
+        def __init__(self, config: AppConfig, *, failing: bool = False) -> None:
             self._failing = failing
 
         def parse(self, raw: str, **kw: Any) -> ParsedEmail:
@@ -403,11 +361,11 @@ class TestDeliverPipeline:
             return _FAKE_FORMATTED
 
     class _TrackingClient:
-        """Context-manager stub that records send text and stage."""
+        """Context-manager stub that records send text and stage; optionally raises."""
 
         _sent_texts: list[str] = []
 
-        def __init__(self, cfg: AppConfig, *, failing: bool = False) -> None:
+        def __init__(self, config: AppConfig, *, failing: bool = False) -> None:
             self._failing = failing
 
         def __enter__(self) -> TestDeliverPipeline._TrackingClient:
@@ -549,7 +507,7 @@ class TestRunPipeMode:
     def test_successful_delivery_returns_ex_ok(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.setattr(main_module, "_deliver", lambda *args: None)
+        monkeypatch.setattr(main_module, "_deliver", lambda *_: None)
         monkeypatch.setattr(sys, "stdin", io.StringIO("From: x\n\nbody"))
         assert _run_pipe_mode(None, None, app_config) == _EX_OK
 
@@ -717,6 +675,30 @@ class TestRunPipeMode:
 
 
 class TestRunSmtpMode:
+    class _SMTPServerCapturing:
+        """SMTPServer stub that stores the on_message callback for inspection."""
+
+        captured_on_message: Any = None
+
+        def __init__(self, config: AppConfig, on_message: Any) -> None:
+            TestRunSmtpMode._SMTPServerCapturing.captured_on_message = on_message
+
+        def run(self) -> None:
+            pass
+
+    @staticmethod
+    def _smtp_server_raising(exc: BaseException) -> type[Any]:
+        """Return a stub SMTPServer class whose run() raises exc."""
+
+        class _Stub:
+            def __init__(self, config: AppConfig, on_message: Any) -> None:
+                pass
+
+            def run(self) -> None:
+                raise exc
+
+        return _Stub
+
     def test_successful_server_run_returns_ex_ok(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
     ):
@@ -729,7 +711,7 @@ class TestRunSmtpMode:
         monkeypatch.setattr(
             main_module,
             "SMTPServer",
-            _smtp_server_raising(TelegramSendmailError("API unreachable")),
+            self._smtp_server_raising(TelegramSendmailError("API unreachable")),
         )
         assert _run_smtp_mode(app_config) == _EX_ERROR
 
@@ -739,18 +721,18 @@ class TestRunSmtpMode:
         monkeypatch.setattr(
             main_module,
             "SMTPServer",
-            _smtp_server_raising(RuntimeError("segfault simulation")),
+            self._smtp_server_raising(RuntimeError("segfault simulation")),
         )
         assert _run_smtp_mode(app_config) == _EX_ERROR
 
     def test_smtp_server_constructed_with_on_message_callback(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
     ):
-        _SMTPServerCapturing.captured_on_message = None
-        monkeypatch.setattr(main_module, "SMTPServer", _SMTPServerCapturing)
+        self._SMTPServerCapturing.captured_on_message = None
+        monkeypatch.setattr(main_module, "SMTPServer", self._SMTPServerCapturing)
         _run_smtp_mode(app_config)
-        assert _SMTPServerCapturing.captured_on_message is not None
-        assert callable(_SMTPServerCapturing.captured_on_message)
+        assert self._SMTPServerCapturing.captured_on_message is not None
+        assert callable(self._SMTPServerCapturing.captured_on_message)
 
 
 # --------------------------------------------------------------------------
@@ -802,15 +784,20 @@ class TestRunInteractiveMode:
 
 
 class TestMainDispatch:
+    class _FakeTTY(io.StringIO):
+        """StringIO whose isatty() returns True, simulating a real terminal."""
+
+        def isatty(self) -> bool:
+            return True
+
     @staticmethod
     def _raise_config_error() -> AppConfig:
-        # Shared by test_configuration_error_exits_with_code_78 and
-        # test_config_error_is_logged_before_exit; class-level avoids
-        # duplicating the local-function definition in each test body.
+        """Simulate config loading failure by raising ConfigurationError."""
         raise ConfigurationError("config file not found")
 
     @staticmethod
-    def _raise_rate_limit(raw: str, sender: Any, cfg: Any):
+    def _raise_rate_limit(raw: str, sender: Any, config: Any):
+        """Simulate Telegram API rate limit by raising TelegramAPIError with 429."""
         raise TelegramAPIError("Too Many Requests", status_code=429)
 
     def test_configuration_error_exits_with_code_78(
@@ -818,13 +805,9 @@ class TestMainDispatch:
         monkeypatch: pytest.MonkeyPatch,
         no_setup_logging: None,
     ):
-        monkeypatch.setattr(
-            cfg_module.ConfigLoader,
-            "load",
-            staticmethod(self._raise_config_error),
-        )
+        monkeypatch.setattr(cfg_module.ConfigLoader, "load", self._raise_config_error)
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail"])
-        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+        monkeypatch.setattr(sys, "stdin", io.StringIO())
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == _EX_CONFIG
@@ -837,7 +820,7 @@ class TestMainDispatch:
     ):
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail"])
         # _FakeTTY.isatty() returns True -> interactive guard -> EX_ERROR
-        monkeypatch.setattr(sys, "stdin", _FakeTTY(""))
+        monkeypatch.setattr(sys, "stdin", self._FakeTTY())
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == _EX_ERROR
@@ -851,7 +834,7 @@ class TestMainDispatch:
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail"])
         monkeypatch.setattr(sys, "stdin", io.StringIO("From: x\n\nbody"))
         # Stub _deliver so no real network or filesystem access occurs.
-        monkeypatch.setattr(main_module, "_deliver", lambda raw, sender, cfg: None)
+        monkeypatch.setattr(main_module, "_deliver", lambda *_: None)
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == _EX_OK
@@ -863,7 +846,7 @@ class TestMainDispatch:
         no_setup_logging: None,
     ):
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail", "-bs"])
-        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+        monkeypatch.setattr(sys, "stdin", io.StringIO())
         monkeypatch.setattr(main_module, "SMTPServer", _SMTPServerOk)
         with pytest.raises(SystemExit) as exc_info:
             main()
@@ -889,13 +872,9 @@ class TestMainDispatch:
         no_setup_logging: None,
         caplog: pytest.LogCaptureFixture,
     ):
-        monkeypatch.setattr(
-            cfg_module.ConfigLoader,
-            "load",
-            staticmethod(self._raise_config_error),
-        )
+        monkeypatch.setattr(cfg_module.ConfigLoader, "load", self._raise_config_error)
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail"])
-        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+        monkeypatch.setattr(sys, "stdin", io.StringIO())
         with caplog.at_level(logging.ERROR, logger="telegram_sendmail.__main__"):
             with pytest.raises(SystemExit):
                 main()
@@ -911,7 +890,7 @@ class TestMainDispatch:
     ):
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail", "--debug"])
         monkeypatch.setattr(sys, "stdin", io.StringIO("From: x\n\nbody"))
-        monkeypatch.setattr(main_module, "_deliver", lambda raw, sender, cfg: None)
+        monkeypatch.setattr(main_module, "_deliver", lambda *_: None)
         with pytest.raises(SystemExit):
             main()
         for handler in logging.root.handlers:
