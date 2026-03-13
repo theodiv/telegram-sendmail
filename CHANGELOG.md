@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--probe` flag to validate configuration and verify Telegram API
+  connectivity without reading from stdin. ([#9](https://github.com/theodiv/telegram-sendmail/issues/9))
+
 ### Fixed
 
 - Send a `421` shutdown response on SIGTERM and SIGINT in `-bs` mode instead
