@@ -88,3 +88,29 @@ backoff_factor = 0.5
 ;
 ; Default: false
 disable_notification = false
+
+
+[filters]
+
+; Suppress known-noisy messages from being forwarded to Telegram.
+; Matched messages are still archived to the spool file for audit.
+; Each key accepts one or more case-insensitive glob patterns (Python
+; fnmatch semantics: *, ?, [seq], [!seq]). Place each pattern on its
+; own line, indented under the key.
+
+; Suppress messages whose Subject header matches any of these patterns.
+; Example: skip routine cron output and logwatch daily digests.
+;
+; Default: (none)
+; suppress_subject =
+;   cron *
+;   *logwatch*
+;   daily backup*
+
+; Suppress messages whose From header matches any of these patterns.
+; Example: skip messages from automated noreply senders.
+;
+; Default: (none)
+; suppress_sender =
+;   *@noreply.local
+;   root@monitoring.*

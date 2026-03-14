@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `[filters]` INI section with `suppress_subject` and `suppress_sender`
+  multi-line keys for glob-based message suppression. ([#12](https://github.com/theodiv/telegram-sendmail/issues/12))
+
 ## [1.1.0] - 2026-03-14
 
 ### Added

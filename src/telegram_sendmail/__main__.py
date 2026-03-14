@@ -28,6 +28,7 @@ Exit codes
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import logging
 import logging.handlers
 import sys
@@ -43,7 +44,7 @@ from telegram_sendmail.exceptions import (
     TelegramAPIError,
     TelegramSendmailError,
 )
-from telegram_sendmail.parser import EmailParser
+from telegram_sendmail.parser import EmailParser, ParsedEmail
 from telegram_sendmail.smtp import SMTPServer
 from telegram_sendmail.spool import MailSpooler
 
@@ -84,8 +85,10 @@ def _deliver(
     1. **Spool**  — archive the raw email. Non-fatal: a `SpoolError` is
                     logged at WARNING level and delivery continues.
     2. **Parse**  — decode MIME structure and convert body to Telegram markup.
-    3. **Format** — wrap in the Telegram message envelope with truncation.
-    4. **Send**   — deliver via the Telegram Bot API.
+    3. **Filter** — check Subject and From headers against configured
+                    suppression patterns. Matched messages return early.
+    4. **Format** — wrap in the Telegram message envelope with truncation.
+    5. **Send**   — deliver via the Telegram Bot API.
 
     Args:
         raw_email:       Raw RFC 2822 email string.
@@ -105,10 +108,47 @@ def _deliver(
 
     parser = EmailParser(config)
     parsed = parser.parse(raw_email, sender_override=sender_override)
+
+    if _is_suppressed(parsed, config):
+        return
+
     text = parser.format_for_telegram(parsed)
 
     with TelegramClient(config) as client:
         client.send(text)
+
+
+def _is_suppressed(parsed: ParsedEmail, config: AppConfig) -> bool:
+    """
+    Check parsed email headers against the configured suppression patterns.
+
+    Pattern matching uses `fnmatch` (case-insensitive) so operators can
+    write shell-style globs in the INI file. The check runs against the
+    fully resolved sender and subject — including CLI overrides and
+    RFC 2047 decoding — so suppression patterns match exactly what would
+    appear in the Telegram message.
+
+    Returns:
+        `True` if any pattern matches, `False` otherwise.
+    """
+    suppression_checks = (
+        ("Subject", parsed.subject, config.suppress_subject),
+        ("From", parsed.sender, config.suppress_sender),
+    )
+
+    for name, value, patterns in suppression_checks:
+        if not patterns:
+            continue
+
+        value_lower = value.lower()
+        for pattern in patterns:
+            if fnmatch.fnmatch(value_lower, pattern.lower()):
+                logger.debug(
+                    "Suppressed: %s '%s' matched pattern '%s'", name, value, pattern
+                )
+                return True
+
+    return False
 
 
 def _make_smtp_handler(config: AppConfig) -> Callable[[str, str | None], None]:
