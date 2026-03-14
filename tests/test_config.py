@@ -49,6 +49,14 @@ Coverage targets
     - Accepts a valid max_retries integer
     - Uses the configured spool_dir as the parent of the resolved spool path
 
+`_parse_filters`
+    - Returns empty tuples when the [filters] section is absent or has no keys
+    - Parses a single suppress_subject or suppress_sender pattern
+    - Parses multiline values into separate patterns
+    - Strips whitespace and drops blank lines from pattern lists
+    - Parses both keys together when both are present
+    - Logs a DEBUG message reporting the count of loaded patterns
+
 `ConfigLoader.load`
     - Raises ConfigurationError when no config file is found on disk
     - Raises ConfigurationError when the config file exists but is not readable
@@ -56,6 +64,7 @@ Coverage targets
     - Raises ConfigurationError when the [telegram] chat_id key is absent
     - Returns a fully populated AppConfig for a minimal valid config file
     - Parses all [options] keys correctly into the returned AppConfig
+    - Populates suppress_subject and suppress_sender from [filters] section
     - Prefers the user config over the system config when both are present
     - Returns the system config when only the system config exists
     - Returns a frozen (immutable) AppConfig instance
@@ -97,6 +106,7 @@ from telegram_sendmail.config import (
     ConfigLoader,
     _audit_permissions,
     _locate_config_file,
+    _parse_filters,
     _parse_options,
     _require,
     _resolve_spool_path,
@@ -110,12 +120,15 @@ from telegram_sendmail.exceptions import ConfigurationError
 # --------------------------------------------------------------------------
 
 
-def _parser_with(**options: Any) -> configparser.ConfigParser:
-    """Return a ConfigParser with an [options] section populated from kwargs."""
+def _parser_with(**kwargs: Any) -> configparser.ConfigParser:
+    """Return a ConfigParser with keys mapped into their respective sections."""
+    key_map = {"filters": ("suppress_subject", "suppress_sender")}
     cp = configparser.ConfigParser(interpolation=None)
-    cp.add_section("options")
-    for key, value in options.items():
-        cp.set("options", key, str(value))
+    for key, value in kwargs.items():
+        section = next((s for s, keys in key_map.items() if key in keys), "options")
+        if not cp.has_section(section):
+            cp.add_section(section)
+        cp.set(section, key, str(value))
     return cp
 
 
@@ -564,6 +577,64 @@ class TestParseOptions:
 
 
 # --------------------------------------------------------------------------
+# _parse_filters
+# --------------------------------------------------------------------------
+
+
+class TestParseFilters:
+    def test_returns_empty_tuples_when_filters_section_absent(self):
+        parser = configparser.ConfigParser(interpolation=None)
+        assert _parse_filters(parser) == ((), ())
+
+    def test_returns_empty_tuples_when_filters_section_has_no_keys(self):
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.add_section("filters")
+        assert _parse_filters(parser) == ((), ())
+
+    def test_parses_single_suppress_subject_pattern(self):
+        parser = _parser_with(suppress_subject="cron *")
+        subjects, senders = _parse_filters(parser)
+        assert subjects == ("cron *",)
+        assert senders == ()
+
+    def test_parses_single_suppress_sender_pattern(self):
+        parser = _parser_with(suppress_sender="*@noreply.local")
+        subjects, senders = _parse_filters(parser)
+        assert subjects == ()
+        assert senders == ("*@noreply.local",)
+
+    def test_parses_multiline_suppress_subject_patterns(self):
+        parser = _parser_with(suppress_subject="cron *\n*logwatch*\n  daily backup*  ")
+        subjects, _ = _parse_filters(parser)
+        assert subjects == ("cron *", "*logwatch*", "daily backup*")
+
+    def test_parses_multiline_suppress_sender_patterns(self):
+        parser = _parser_with(suppress_sender="*@noreply.*\nroot@*\n  daemon@local  ")
+        _, senders = _parse_filters(parser)
+        assert senders == ("*@noreply.*", "root@*", "daemon@local")
+
+    def test_strips_whitespace_and_drops_blank_lines(self):
+        parser = _parser_with(suppress_subject="\n  \n  pattern*  \n\n  *glob  \n  ")
+        subjects, _ = _parse_filters(parser)
+        assert subjects == ("pattern*", "*glob")
+
+    def test_both_keys_parsed_together(self):
+        parser = _parser_with(suppress_subject="subj*", suppress_sender="sender@*")
+        subjects, senders = _parse_filters(parser)
+        assert subjects == ("subj*",)
+        assert senders == ("sender@*",)
+
+    def test_logs_debug_when_patterns_loaded(self, caplog: pytest.LogCaptureFixture):
+        parser = _parser_with(suppress_subject="cron *\n*logwatch*")
+        with caplog.at_level(logging.DEBUG, logger="telegram_sendmail.config"):
+            _parse_filters(parser)
+        assert any(
+            "2 suppression pattern(s)" in r.message and "suppress_subject" in r.message
+            for r in caplog.records
+        )
+
+
+# --------------------------------------------------------------------------
 # ConfigLoader.load — end-to-end integration
 # --------------------------------------------------------------------------
 
@@ -644,6 +715,21 @@ class TestConfigLoaderLoad:
         assert config.max_retries == 5
         assert config.backoff_factor == 1.0
         assert config.disable_notification is True
+
+    def test_populates_suppress_fields_from_filters_section(
+        self, patched_config_constants: dict[str, Path]
+    ):
+        user_ini = patched_config_constants["user_ini"]
+        user_ini.write_text(
+            "[telegram]\ntoken = t\nchat_id = -1\n"
+            "[filters]\n"
+            "suppress_subject =\n  cron*\n  *logwatch*\n"
+            "suppress_sender =\n  root@*\n"
+        )
+        user_ini.chmod(0o600)
+        config = ConfigLoader.load()
+        assert config.suppress_subject == ("cron*", "*logwatch*")
+        assert config.suppress_sender == ("root@*",)
 
     def test_user_config_preferred_over_system_config(
         self, patched_config_constants: dict[str, Path]

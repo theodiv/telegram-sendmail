@@ -81,6 +81,12 @@ class AppConfig:
                               `urllib3`'s exponential backoff algorithm.
                               Effective sleep between attempt *n* and *n+1* is
                               `backoff_factor * (2 ** (n - 1))` seconds.
+        suppress_subject:     Case-insensitive glob patterns matched against
+                              the Subject header. Matching messages are
+                              spooled but skipped for Telegram delivery.
+        suppress_sender:      Case-insensitive glob patterns matched against
+                              the From header. Same suppression semantics as
+                              `suppress_subject`.
     """
 
     token: str
@@ -92,6 +98,8 @@ class AppConfig:
     spool_path: Path
     max_retries: int
     backoff_factor: float
+    suppress_subject: tuple[str, ...] = ()
+    suppress_sender: tuple[str, ...] = ()
 
 
 # --------------------------------------------------------------------------
@@ -418,6 +426,42 @@ def _parse_options(
     )
 
 
+def _parse_filters(
+    parser: configparser.ConfigParser,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """
+    Extract glob patterns from the `[filters]` INI section.
+
+    Each multi-line key is split on newlines; empty lines and
+    whitespace-only entries are silently dropped. The function never
+    raises — a missing section or empty keys simply produce empty tuples
+    so that delivery is never blocked by a filter misconfiguration.
+
+    Returns:
+        A tuple of `(suppress_subject, suppress_sender)`.
+    """
+    if not parser.has_section("filters"):
+        return ((), ())
+
+    def _read_patterns(key: str) -> tuple[str, ...]:
+        if not parser.has_option("filters", key):
+            return ()
+        raw = parser.get("filters", key)
+        patterns = tuple(line.strip() for line in raw.splitlines() if line.strip())
+        if patterns:
+            logger.debug(
+                "Loaded %d suppression pattern(s) from [filters] %s",
+                len(patterns),
+                key,
+            )
+        return patterns
+
+    return (
+        _read_patterns("suppress_subject"),
+        _read_patterns("suppress_sender"),
+    )
+
+
 # --------------------------------------------------------------------------
 # Public interface
 # --------------------------------------------------------------------------
@@ -481,6 +525,8 @@ class ConfigLoader:
             backoff_factor,
         ) = _parse_options(parser, config_file)
 
+        suppress_subject, suppress_sender = _parse_filters(parser)
+
         logger.debug("Configuration loaded successfully from '%s'", config_file)
 
         return AppConfig(
@@ -493,4 +539,6 @@ class ConfigLoader:
             spool_path=spool_path,
             max_retries=max_retries,
             backoff_factor=backoff_factor,
+            suppress_subject=suppress_subject,
+            suppress_sender=suppress_sender,
         )

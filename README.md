@@ -46,6 +46,9 @@ Two modes of operation are supported:
   `-i`, `-oi`, plus silent acceptance of positional recipient arguments
 - Configurable HTTP retry strategy with exponential backoff for resilience
   against transient Telegram API failures
+- Suppresses known-noisy messages via case-insensitive glob patterns on
+  `Subject` and `From` headers, keeping the destination chat focused on
+  actionable alerts
 - Validates configuration and Telegram connectivity via `--probe` without
   reading from stdin, suitable for provisioning pipelines and smoke tests
 - `EX_TEMPFAIL` (exit code 75) signalling on HTTP 429/5xx so MTA-aware daemons
@@ -186,8 +189,8 @@ chat_id = -1001234567890
 ; All keys below are optional. Out-of-range or malformed values fall
 ; back to their documented defaults with a WARNING logged to syslog.
 
-; Spool directory. Effective path: <spool_dir>/<username>
-; Default: /var/mail
+; Spool directory. Default: /var/mail
+; Effective path: <spool_dir>/<username>
 spool_dir = /var/mail
 
 ; Maximum body length forwarded to Telegram (100–4096). Default: 3800
@@ -208,7 +211,23 @@ backoff_factor = 0.5
 
 ; Suppress notification sound and banner. Default: false
 disable_notification = false
+
+[filters]
+; Suppress noisy messages by Subject header. Default: (none)
+; suppress_subject =
+;   cron *
+;   *logwatch*
+;
+; Suppress noisy messages by From header. Default: (none)
+; suppress_sender =
+;   *@noreply.local
 ```
+
+Messages matching any `suppress_subject` or `suppress_sender` glob pattern in
+the `[filters]` section are archived to the spool file but skipped for
+Telegram delivery. Patterns use Python `fnmatch` semantics (`*`, `?`,
+`[seq]`) and are case-insensitive. Multiple patterns are specified one per
+line, indented under the key.
 
 The complete annotated template is provided in
 [`telegram-sendmail.ini.example`](telegram-sendmail.ini.example).

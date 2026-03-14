@@ -3,6 +3,13 @@ Tests for telegram_sendmail.__main__.
 
 Coverage targets
 ----------------
+`_is_suppressed`
+    - Returns False when no patterns are configured or neither header matches any pattern
+    - Returns True when the subject or sender matches a configured glob pattern
+    - Matching is case-insensitive for both subject and sender patterns
+    - Subject patterns are checked before sender patterns
+    - Logs a DEBUG message identifying the matched header and pattern
+
 `_bounded_stdin_read`
     - Returns full content when input is under or exactly at `_MAX_PIPE_SIZE`
     - Truncates oversized input to exactly `_MAX_PIPE_SIZE` characters and emits a WARNING
@@ -17,6 +24,9 @@ Coverage targets
 
 `_deliver`
     - Invokes all three pipeline stages (spool -> parse -> send) in order on the happy path
+    - Skips format_for_telegram and TelegramClient.send when _is_suppressed returns True
+    - Still invokes MailSpooler.write and EmailParser.parse for suppressed messages
+    - Proceeds through the full pipeline when no suppression pattern matches
     - Catches SpoolError without propagating it so delivery continues
     - Invokes EmailParser.parse and TelegramClient.send even when the spool write fails
     - Logs a WARNING via the spool logger before raising SpoolError
@@ -95,6 +105,7 @@ from __future__ import annotations
 import io
 import logging
 import sys
+from dataclasses import replace
 from typing import Any, TextIO
 
 import pytest
@@ -112,6 +123,7 @@ from telegram_sendmail.__main__ import (
     _PROBE_MESSAGE,
     _bounded_stdin_read,
     _deliver,
+    _is_suppressed,
     _run_interactive_mode,
     _run_pipe_mode,
     _run_probe_mode,
@@ -218,6 +230,76 @@ class _SMTPServerOk:
 def no_setup_logging(monkeypatch: pytest.MonkeyPatch):
     """Prevent _setup_logging from attaching handlers to logging.root."""
     monkeypatch.setattr(main_module, "_setup_logging", lambda **_: None)
+
+
+@pytest.fixture
+def app_config_with_filters(app_config: AppConfig) -> AppConfig:
+    """Return `app_config` with subject and sender suppression patterns."""
+    return replace(
+        app_config,
+        suppress_subject=("cron *", "*logwatch*"),
+        suppress_sender=("*@noreply.local",),
+    )
+
+
+# --------------------------------------------------------------------------
+# _is_suppressed — filter pattern matching
+# --------------------------------------------------------------------------
+
+
+class TestIsSuppressed:
+    def test_returns_false_when_no_patterns_configured(self, app_config: AppConfig):
+        assert _is_suppressed(_FAKE_PARSED, app_config) is False
+
+    def test_returns_true_when_subject_matches_pattern(
+        self, app_config_with_filters: AppConfig
+    ):
+        parsed = replace(_FAKE_PARSED, subject="Cron Job Success")
+        assert _is_suppressed(parsed, app_config_with_filters) is True
+
+    def test_returns_true_when_sender_matches_pattern(
+        self, app_config_with_filters: AppConfig
+    ):
+        parsed = replace(_FAKE_PARSED, sender="daemon@noreply.local")
+        assert _is_suppressed(parsed, app_config_with_filters) is True
+
+    def test_returns_false_when_neither_header_matches(
+        self, app_config_with_filters: AppConfig
+    ):
+        assert _is_suppressed(_FAKE_PARSED, app_config_with_filters) is False
+
+    def test_matching_is_case_insensitive(self, app_config: AppConfig):
+        config = replace(app_config, suppress_subject=("CRON *",))
+        parsed = replace(_FAKE_PARSED, subject="cron job output")
+        assert _is_suppressed(parsed, config) is True
+
+    def test_subject_checked_before_sender(
+        self,
+        app_config: AppConfig,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        config = replace(
+            app_config, suppress_subject=("match*",), suppress_sender=("match@*",)
+        )
+        parsed = replace(_FAKE_PARSED, sender="match@host.local", subject="Match This")
+        with caplog.at_level(logging.DEBUG, logger="telegram_sendmail.__main__"):
+            result = _is_suppressed(parsed, config)
+        assert result is True
+        # Subject match fires first; the DEBUG log should reference Subject.
+        assert any("Subject" in r.message for r in caplog.records)
+        assert not any("From" in r.message for r in caplog.records)
+
+    def test_logs_debug_with_matched_pattern(
+        self,
+        app_config_with_filters: AppConfig,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        parsed = replace(_FAKE_PARSED, subject="Logwatch Daily Report")
+        with caplog.at_level(logging.DEBUG, logger="telegram_sendmail.__main__"):
+            _is_suppressed(parsed, app_config_with_filters)
+        assert any(
+            "*logwatch*" in r.message and "Subject" in r.message for r in caplog.records
+        )
 
 
 # --------------------------------------------------------------------------
@@ -404,6 +486,28 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
         _deliver("raw email", None, app_config)
         assert self._stages == ["spool", "parse", "send"]
+
+    def test_non_matching_message_proceeds_through_full_pipeline(
+        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        type(self)._stages = []
+        config = replace(app_config, suppress_subject=("no match*",))
+        monkeypatch.setattr(main_module, "MailSpooler", self._TrackingSpooler)
+        monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
+        monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
+        _deliver("raw email", None, config)
+        assert self._stages == ["spool", "parse", "send"]
+
+    def test_suppressed_message_still_spools_and_skips_send(
+        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        type(self)._stages = []
+        config = replace(app_config, suppress_subject=("disk alert",))
+        monkeypatch.setattr(main_module, "MailSpooler", self._TrackingSpooler)
+        monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
+        monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
+        _deliver("raw email", None, config)
+        assert self._stages == ["spool", "parse"]
 
     def test_spool_error_does_not_propagate(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch

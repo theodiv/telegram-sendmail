@@ -27,6 +27,8 @@ Two delivery modes:
 - Full `sendmail`-compatible flag support: `-f`, `-r`, `-s`, `-bs`, `-t`,
   `-i`, `-oi`, plus silent acceptance of positional recipient arguments
 - Configurable HTTP retry strategy with exponential backoff
+- Suppresses known-noisy messages via case-insensitive glob patterns on
+  `Subject` and `From` headers
 - `EX_TEMPFAIL` (exit code 75) on HTTP 429/5xx so MTA-aware daemons
   re-queue and retry automatically
 
@@ -70,6 +72,10 @@ chat_id = -1001234567890
 ; max_retries           = 3         (0–10)
 ; backoff_factor        = 0.5       (0.0–10.0)
 ; disable_notification  = false
+
+[filters]
+; suppress_subject =                (case-insensitive globs)
+; suppress_sender  =                (case-insensitive globs)
 ```
 
 The config file contains the bot token. Permissions **must** be `0600`; a
