@@ -7,7 +7,8 @@ Operators are advised to update to the current release promptly.
 
 | Version | Supported |
 |---------|-----------|
-| 1.1.x   | ✅ Yes    |
+| 1.2.x   | ✅ Yes    |
+| 1.1.x   | ❌ No     |
 | 1.0.x   | ❌ No     |
 
 ## Threat Model
