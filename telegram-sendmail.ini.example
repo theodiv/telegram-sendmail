@@ -6,25 +6,25 @@
 ;
 ; The per-user file takes precedence when both are present.
 ;
-; Permissions must be 0600 — the file contains your bot token:
+; Permissions must be 0600 — the file contains the bot token:
 ;   chmod 600 /etc/telegram-sendmail.ini
 ;
-; All keys in [options] are optional. Absent, out-of-range, or malformed
-; values fall back to the documented default and a WARNING is logged to
-; syslog. A single bad option never blocks message delivery.
+; All keys in [options] and [filters] are optional. Absent, out-of-range,
+; or malformed values fall back to the documented default and a WARNING is
+; logged to syslog. A single bad option never blocks message delivery.
 ; ============================================================================
 
 
 [telegram]
 
-; Your Telegram Bot API token.
+; Telegram Bot API token.
 ; Obtain one from @BotFather: https://core.telegram.org/bots#botfather
 ; Required.
 token = 123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ; The Telegram chat ID to deliver messages to.
 ; Accepted values: personal chat ID, group ID, or channel ID (prefixed -100).
-; To find your chat ID, send a message to your bot then open:
+; To find the chat ID, send a message to the bot then open:
 ;   https://api.telegram.org/bot<token>/getUpdates
 ; Required.
 chat_id = -1001234567890
@@ -76,7 +76,7 @@ max_retries = 3
 ; Exponential backoff multiplier applied between retry attempts.
 ; The effective pause before attempt n (1-indexed) is:
 ;   backoff_factor × (2 ^ (n − 1)) seconds
-; With the default of 0.5: 0.5 s, 1 s, 2 s, …
+; With the default of 0.5: 0.5 s, 1 s, 2 s, ...
 ; Set to 0.0 to retry without any delay (not recommended in production).
 ;
 ; Valid range: 0.0 – 10.0  |  Default: 0.5
