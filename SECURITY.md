@@ -3,13 +3,8 @@
 ## Supported Versions
 
 Only the latest released version of `telegram-sendmail` receives security fixes.
-Operators are advised to update to the current release promptly.
-
-| Version | Supported |
-|---------|-----------|
-| 1.2.x   | ✅ Yes    |
-| 1.1.x   | ❌ No     |
-| 1.0.x   | ❌ No     |
+Older releases are not patched. Operators are advised to update to the current
+release promptly to ensure their deployments remain secure.
 
 ## Threat Model
 
