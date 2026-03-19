@@ -509,9 +509,8 @@ class TestFormatForTelegram:
 
     def test_output_contains_telegram_envelope_header(self, app_config: AppConfig):
         result = EmailParser(app_config).format_for_telegram(_make_parsed())
-        assert "📬 New Notification" in result
-        assert "<b>From:</b>" in result
-        assert "<b>Subject:</b>" in result
+        assert "📬 <b>user@example.com</b>" in result
+        assert "<i>Test Subject</i>" in result
 
     def test_output_wraps_body_in_expandable_blockquote(self, app_config: AppConfig):
         result = EmailParser(app_config).format_for_telegram(_make_parsed())

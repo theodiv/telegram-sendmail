@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Compact Telegram message envelope by removing the static "New Notification"
+  header, along with the "From:" and "Subject:" labels.
+
 ## [1.2.0] - 2026-03-14
 
 ### Added
