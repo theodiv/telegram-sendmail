@@ -1,4 +1,4 @@
-# Contributing to telegram-sendmail
+# Contributing to Telegram Sendmail
 
 Contributions are welcome. This document defines the standards, workflow, and
 expectations for all submissions to this project.
@@ -27,7 +27,7 @@ directly through the contact information on the GitHub profile.
 
 ```bash
 # 1. Fork the repository on GitHub, then clone the fork
-git clone https://github.com/<your-username>/telegram-sendmail.git
+git clone https://github.com/<username>/telegram-sendmail.git
 cd telegram-sendmail
 
 # 2. Create an isolated virtual environment
@@ -68,16 +68,17 @@ Key conventions:
 
 The `[dev]` dependency group installs everything required for development:
 
-| Tool            | Purpose                                 |
-|-----------------|-----------------------------------------|
-| `ruff`          | Linting, formatting, and import sorting |
-| `mypy`          | Static type checking (strict mode)      |
-| `pytest`        | Test runner                             |
-| `pytest-cov`    | Coverage measurement                    |
-| `requests-mock` | HTTP transport-layer mocking            |
-| `pre-commit`    | Git hook manager                        |
+| Tool             | Purpose                                 |
+|------------------|-----------------------------------------|
+| `ruff`           | Linting, formatting, and import sorting |
+| `mypy`           | Static type checking (strict mode)      |
+| `pytest`         | Test runner                             |
+| `pytest-cov`     | Coverage measurement                    |
+| `requests-mock`  | HTTP transport-layer mocking            |
+| `types-requests` | Type stubs for `requests` (MyPy)        |
+| `pre-commit`     | Git hook manager                        |
 
-### Binary builds — PyInstaller
+### Binary Builds — PyInstaller
 
 The release pipeline compiles the package into a standalone binary using
 [PyInstaller](https://pyinstaller.org/). Contributors working on imports,
@@ -179,9 +180,15 @@ pytest -k "smtp"
 
 The global coverage gate is set at **80%**. Critical logic in `client.py`,
 `parser.py`, and `smtp.py` is enforced at **90%** by CI. New code should
-meet or exceed these thresholds.
+meet or exceed these thresholds. To verify per-module thresholds locally
+before pushing, run the enforcement script after the test suite:
 
-### Test design standards
+```bash
+# Enforce per-module coverage thresholds (requires a prior pytest run)
+python scripts/module_coverage.py
+```
+
+### Test Design Standards
 
 - Tests must exercise **real behaviour**, not mirror the implementation's
   assumptions. A mock or fixture that encodes the same incorrect assumption
