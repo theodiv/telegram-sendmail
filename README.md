@@ -132,6 +132,11 @@ valid, the bot token is accepted, and the `chat_id` is reachable. Exit code
 Development setup, coding standards, and the pull request process are
 documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Code of Conduct
+
+Behavioural expectations for all project participants are governed by
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
 ## Changelog
 
 A detailed version history is maintained in [CHANGELOG.md](CHANGELOG.md).

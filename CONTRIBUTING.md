@@ -16,10 +16,8 @@ expectations for all submissions to this project.
 
 ## Code of Conduct
 
-All interactions must remain professional and respectful. Harassment,
-dismissive language, or personal attacks of any kind are not tolerated. Conduct
-concerns may be raised via a private issue or by contacting the maintainer
-directly through the contact information on the GitHub profile.
+All participants are expected to follow the project's
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Getting Started
 
