@@ -130,8 +130,9 @@ cd telegram-sendmail
 pip install -e .
 ```
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for instructions on installing the
-development dependencies and configuring the full quality toolchain.
+See the [Contributing Guide](../CONTRIBUTING.md) for instructions on
+installing the development dependencies and configuring the full quality
+toolchain.
 
 ## Configuration
 
@@ -528,7 +529,7 @@ the path. The `O_NOFOLLOW` flag prevents symlink redirection attacks. These
 measures are described in detail in the [Mail Spooling](#mail-spooling) section.
 
 For the full threat model, hardening recommendations, and vulnerability
-reporting process, see [SECURITY.md](../SECURITY.md).
+reporting process, see the [Security Policy](../SECURITY.md).
 
 ## Exit Codes
 
@@ -702,20 +703,20 @@ sudo rm -rf /var/mail/$(whoami)    # adjust if spool_dir was customised
 ## Contributing
 
 Development setup instructions, coding standards, and the pull request
-process are documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
+process are documented in the [Contributing Guide](../CONTRIBUTING.md).
 
 ## Code of Conduct
 
 Behavioural expectations for all project participants are governed by
-[CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md).
+the [Code of Conduct](../CODE_OF_CONDUCT.md).
 
 ## Changelog
 
 A detailed version history following the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format is
-maintained in [CHANGELOG.md](../CHANGELOG.md).
+maintained in the [Changelog](../CHANGELOG.md).
 
 ## Security
 
 The threat model, security hardening recommendations, and the vulnerability
-disclosure process are documented in [SECURITY.md](../SECURITY.md).
+disclosure process are documented in the [Security Policy](../SECURITY.md).
