@@ -419,17 +419,12 @@ class EmailParser:
         body += _TRUNCATED_FOOTER if truncated else ""
         body += _ATTACHMENT_FOOTER if parsed.has_attachments else ""
 
-        sender = (
-            html.escape(parsed.sender) if parsed.sender else "<i>(unknown sender)</i>"
-        )
-        subject = (
-            html.escape(parsed.subject) if parsed.subject else "<i>(no subject)</i>"
-        )
+        sender = html.escape(parsed.sender) if parsed.sender else "(unknown sender)"
+        subject = html.escape(parsed.subject) if parsed.subject else "(no subject)"
         content = body if body else "<i>(no content)</i>"
 
         return (
-            f"<b>📬 New Notification</b>\n"
-            f"<b>From:</b> {sender}\n"
-            f"<b>Subject:</b> {subject}\n\n"
+            f"📬 <b>{sender}</b>\n"
+            f"<i>{subject}</i>\n\n"
             f"<blockquote expandable>{content}</blockquote>"
         )

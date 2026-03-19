@@ -152,7 +152,7 @@ _FAKE_PARSED = ParsedEmail(
     has_attachments=False,
 )
 
-_FAKE_FORMATTED = "<b>📬 New Notification</b>\nFormatted body"
+_FAKE_FORMATTED = "📬 <b>root@localhost</b>\nFormatted body"
 
 
 class _SpoolerOk:
