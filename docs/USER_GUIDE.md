@@ -703,6 +703,11 @@ sudo rm -rf /var/mail/$(whoami)    # adjust if spool_dir was customised
 Development setup instructions, coding standards, and the pull request
 process are documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## Code of Conduct
+
+Behavioural expectations for all project participants are governed by
+[CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md).
+
 ## Changelog
 
 A detailed version history following the
