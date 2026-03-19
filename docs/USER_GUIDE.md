@@ -35,6 +35,7 @@
   - [Common Issues](#common-issues)
 - [Uninstalling](#uninstalling)
 - [Contributing](#contributing)
+- [Code of Conduct](#code-of-conduct)
 - [Changelog](#changelog)
 - [Security](#security)
 
