@@ -49,6 +49,13 @@ Two modes of operation are supported:
   flag for post-deploy verification, suitable for provisioning pipelines and
   smoke tests.
 
+## Preview
+
+<div align="center">
+  <img alt="Telegram message preview" src="docs/assets/message-preview-dark.png#gh-dark-mode-only" width="480">
+  <img alt="Telegram message preview" src="docs/assets/message-preview.png#gh-light-mode-only" width="480">
+</div>
+
 ## Full Documentation
 
 For all installation methods, the full configuration reference, CLI flags,
