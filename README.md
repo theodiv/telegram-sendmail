@@ -1,14 +1,12 @@
 <div align="center">
-
-  ![Telegram Sendmail Banner](docs/assets/banner-dark.png#gh-dark-mode-only)
-  ![Telegram Sendmail Banner](docs/assets/banner.png#gh-light-mode-only)
+  <img alt="Telegram Sendmail banner" src="docs/assets/banner-dark.png#gh-dark-mode-only" width="448">
+  <img alt="Telegram Sendmail banner" src="docs/assets/banner.png#gh-light-mode-only" width="448">
 
   A drop-in `sendmail` replacement that forwards system emails to Telegram.
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
   [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
   [![CI](https://github.com/theodiv/telegram-sendmail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/theodiv/telegram-sendmail/actions/workflows/ci.yml)
-
 </div>
 
 ---
@@ -155,6 +153,6 @@ process are documented in the [Security Policy](SECURITY.md).
 
 ---
 
-<p align="center">
-  Distributed under the MIT License &nbsp;•&nbsp; Made with ♥ for the Linux sysadmin community
-</p>
+<div align="center">
+  Distributed under the <a href="LICENSE">MIT License</a> &nbsp;•&nbsp; Made with ♥ for the Linux sysadmin community
+</div>
