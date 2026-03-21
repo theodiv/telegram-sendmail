@@ -12,6 +12,9 @@ Coverage targets
     - Discards javascript: href attributes at the sanitizer level (anchor passes through)
     - Preserves surrounding plain text when dangerous and safe tags are interleaved
 
+`TestHTMLSanitizerFullPipeline`
+    - Emits both opening <a> and the matching </a> when an anchor is nested in a block element
+
 `_sanitise_subject`
     - Collapses leading, trailing, and internal whitespace sequences to a single space
     - Handles RFC 2822 folded Subject headers with embedded newlines and indentation
@@ -292,6 +295,12 @@ class TestHTMLSanitizerFullPipeline:
     ):
         parsed = EmailParser(app_config).parse(html_raw_email)
         assert "javascript:" not in parsed.body
+
+    def test_anchor_in_block_element_emits_paired_tags(
+        self, html_raw_email: str, app_config: AppConfig
+    ):
+        parsed = EmailParser(app_config).parse(html_raw_email)
+        assert parsed.body.count("<a ") == parsed.body.count("</a>")
 
 
 # --------------------------------------------------------------------------

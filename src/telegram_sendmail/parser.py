@@ -233,9 +233,15 @@ class TelegramHTMLParser(HTML2Text):
                 parser.o(f"<{toggle_slash}{_INLINE_TAG_MAP[itag]}>")
 
             case "a":
-                href = attrs.get("href", "")
-                if href and href != "#" and not href.startswith("javascript:"):
-                    parser.o(f'<a href="{html.escape(href)}">' if start else "</a>")
+                if start:
+                    href = attrs.get("href", "")
+                    if href and href != "#" and not href.startswith("javascript:"):
+                        parser.o(f'<a href="{html.escape(href)}">')
+                        parser.astack.append(attrs)
+                    else:
+                        parser.astack.append(None)
+                elif parser.astack and parser.astack.pop() is not None:
+                    parser.o("</a>")
 
             case "h1" | "h2" | "h3" | "h4" | "h5" | "h6":
                 if start:

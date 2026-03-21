@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix Telegram delivery failure (`400 Bad Request`) for HTML emails containing
+  `<a href>` links inside block elements. ([#30](https://github.com/theodiv/telegram-sendmail/issues/30))
+
 ### Changed
 
 - Compact Telegram message envelope by removing the static "New Notification"
