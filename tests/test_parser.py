@@ -4,16 +4,19 @@ Tests for telegram_sendmail.parser.
 Coverage targets
 ----------------
 `_HTMLSanitizer` / `_sanitise_html`
-    - Preserves safe inline tags (b, strong, i, em, u, s, code, kbd, tt) in output
-    - Preserves safe block-level and structural tags (h1-h6, pre, blockquote, hr, a, p, ul, li)
+    - Preserves safe inline tags (b, strong, i, em, u, s, code) in output
+    - Preserves safe block-level and structural tags (h1-h6, pre, blockquote, a, p, ul, li)
     - Strips script, style, iframe, object, embed, svg, math, noscript tag content entirely
     - Drops void dangerous elements (input, meta, link) without corrupting surrounding text
     - Correctly tracks suppression depth for arbitrarily nested dangerous tags
-    - Discards javascript: href attributes at the sanitizer level (anchor passes through)
+    - Preserves text content of anchors carrying javascript: href without corrupting the node
     - Preserves surrounding plain text when dangerous and safe tags are interleaved
 
 `TestHTMLSanitizerFullPipeline`
-    - Emits both opening <a> and the matching </a> when an anchor is nested in a block element
+    - Strips script (including nested), style, and iframe content from a real HTML email
+    - Preserves heading content and safe https anchor hrefs in Telegram-formatted output
+    - Discards javascript: href attributes via TelegramHTMLParser in the full end-to-end pipeline
+    - Emits both opening <a> and matching </a> when an anchor is nested in a block element
 
 `_sanitise_subject`
     - Collapses leading, trailing, and internal whitespace sequences to a single space
@@ -22,14 +25,15 @@ Coverage targets
 `EmailParser.parse`
     - Raises ParsingError on whitespace-only or empty input
     - Extracts From and Subject headers into ParsedEmail fields correctly
+    - Populates body with plain-text content from the email
     - Applies sender_override to supersede the From header
     - Sets has_attachments=True for multipart/mixed emails containing a binary attachment
     - Sets has_attachments=False for plain single-part emails
     - Logs attachment count at INFO level when attachments are detected
 
 `EmailParser._extract_body`
-    - Prefers text/plain when a multipart/alternative email contains both part types
-    - Falls back to HTML conversion when no text/plain part exists
+    - Extracts body from the text/plain part of a multipart/mixed email
+    - Falls back to HTML conversion when the email is text/html with no plain part
     - Returns an empty string when no inline body part is present (attachment-only MIME)
     - HTML-escapes angle brackets and ampersands in plain-text bodies
 
@@ -38,20 +42,17 @@ Coverage targets
     - Appends a truncation notice when the body exceeds the limit by a single character
     - Truncates at the nearest word boundary when a space exists within 100 chars of the cutoff
     - Falls back to a hard character cut when no word boundary exists within the 100-char window
-    - Appends the attachment footer when has_attachments is True
-    - Omits the attachment footer for emails with no attachments
-    - Renders the unknown-sender fallback markup when sender is an empty string
-    - Renders the no-subject fallback markup when subject is an empty string
-    - Renders the no-content fallback markup when the body is an empty string
-    - HTML-escapes angle brackets in the sender field
-    - HTML-escapes angle brackets in the subject field
+    - Appends the attachment footer when has_attachments is True and omits it when False
+    - Renders the unknown-sender, no-subject, and no-content fallback markup for empty fields
+    - HTML-escapes angle brackets in the sender field and angle brackets and ampersands in subject
     - Wraps the body in an expandable blockquote with the Telegram envelope header
+    - Appends both truncation notice and attachment footer when body is over-length with attachments
 
 Design notes
 ------------
 - `_sanitise_html` is imported directly to enable exhaustive whitelist/blacklist
   testing of the sanitizer in isolation, independent of the full MIME parse pipeline.
-- The `test_returns_empty_string_when_no_body_part` test uses an attachment-only
+- The `test_returns_empty_string_when_no_inline_body_part` test uses an attachment-only
   multipart email to reach the `body_part is None` branch in `_extract_body`; a
   plain email with an empty body would still have a text/plain part.
 """
