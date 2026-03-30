@@ -8,6 +8,6 @@ Hatchling reads `__version__` from this file via the `[tool.hatch.version]`
 path defined in `pyproject.toml`.
 """
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 __author__ = "Theodosios Divolis"
 __license__ = "MIT"
