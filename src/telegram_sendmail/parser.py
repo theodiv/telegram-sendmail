@@ -64,6 +64,9 @@ _HORIZONTAL_RULE = "─" * 20
 _TRUNCATED_FOOTER = "\n\n<i>[…message truncated…]</i>"
 _ATTACHMENT_FOOTER = "\n\n<i>📎 This email contained attachments (not forwarded)</i>"
 
+# Telegram Bot API hard limit for sendMessage text content.
+_TELEGRAM_MAX_LEN: Final[int] = 4096
+
 
 # --------------------------------------------------------------------------
 # Data model
@@ -400,9 +403,12 @@ class EmailParser:
         """
         Wrap a `ParsedEmail` in the Telegram HTML message envelope.
 
-        Applies smart word-boundary truncation to the body if it exceeds
-        `config.message_max_len`. The attachment footer, if present, is
-        appended *after* truncation so it is always visible.
+        Applies smart word-boundary truncation to the body when it exceeds
+        `config.message_max_len`. The body budget is further capped so that
+        the assembled message (envelope markup, footers, and body) never
+        exceeds the Telegram API hard limit of 4096 characters. For the
+        default `message_max_length` and typical sender/subject lengths the
+        operator-configured limit wins and truncation behaviour is unchanged.
 
         Args:
             parsed: A `ParsedEmail` instance from `self.parse()`.
@@ -411,24 +417,35 @@ class EmailParser:
             A fully formatted string ready to be sent to the Telegram API
             with `parse_mode="HTML"`.
         """
+        sender = html.escape(parsed.sender) if parsed.sender else "(unknown sender)"
+        subject = html.escape(parsed.subject) if parsed.subject else "(no subject)"
+
+        overhead = len(self._build_envelope(sender, subject, "_", True, True)) - 1
+        effective_limit = max(0, min(self._max_len, _TELEGRAM_MAX_LEN - overhead))
+
         body = parsed.body
         truncated = False
 
-        if len(body) > self._max_len:
-            truncate_pos = body[: self._max_len].rfind(" ")
+        if len(body) > effective_limit:
+            truncate_pos = body[:effective_limit].rfind(" ")
             # If the last space is too far back, hard-cut at the limit.
-            if truncate_pos < self._max_len - 100:
-                truncate_pos = self._max_len
+            if truncate_pos < effective_limit - 100:
+                truncate_pos = effective_limit
             body = body[:truncate_pos].rstrip()
             truncated = True
 
-        body += _TRUNCATED_FOOTER if truncated else ""
-        body += _ATTACHMENT_FOOTER if parsed.has_attachments else ""
+        return self._build_envelope(
+            sender, subject, body, truncated, parsed.has_attachments
+        )
 
-        sender = html.escape(parsed.sender) if parsed.sender else "(unknown sender)"
-        subject = html.escape(parsed.subject) if parsed.subject else "(no subject)"
-        content = body if body else "<i>(no content)</i>"
-
+    @staticmethod
+    def _build_envelope(
+        sender: str, subject: str, content: str, truncated: bool, has_attachments: bool
+    ) -> str:
+        """Assemble the full Telegram message string from its components."""
+        content = content if content else "<i>(no content)</i>"
+        content += _TRUNCATED_FOOTER if truncated else ""
+        content += _ATTACHMENT_FOOTER if has_attachments else ""
         return (
             f"📬 <b>{sender}</b>\n"
             f"<i>{subject}</i>\n\n"

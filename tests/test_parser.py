@@ -47,6 +47,9 @@ Coverage targets
     - HTML-escapes angle brackets in the sender field and angle brackets and ampersands in subject
     - Wraps the body in an expandable blockquote with the Telegram envelope header
     - Appends both truncation notice and attachment footer when body is over-length with attachments
+    - Caps the assembled message at 4096 characters when message_max_len is set to 4096
+    - Caps the assembled message at 4096 characters with attachment footer when message_max_len is 4096
+    - Preserves existing truncation behaviour at default message_max_len (3800)
 
 Design notes
 ------------
@@ -58,6 +61,8 @@ Design notes
 """
 
 from __future__ import annotations
+
+import dataclasses
 
 import pytest
 
@@ -535,3 +540,28 @@ class TestFormatForTelegram:
         )
         assert "truncated" in result
         assert "📎" in result
+
+    def test_telegram_hard_cap_enforced_at_max_message_len(self, app_config: AppConfig):
+        config = dataclasses.replace(app_config, message_max_len=4096)
+        body = "a" * 4096
+        result = EmailParser(config).format_for_telegram(_make_parsed(body=body))
+        assert len(result) <= 4096
+        assert "truncated" in result
+
+    def test_telegram_hard_cap_with_attachment_footer(self, app_config: AppConfig):
+        config = dataclasses.replace(app_config, message_max_len=4096)
+        body = "a" * 4096
+        result = EmailParser(config).format_for_telegram(
+            _make_parsed(body=body, has_attachments=True)
+        )
+        assert len(result) <= 4096
+        assert "truncated" in result
+        assert "📎" in result
+
+    def test_default_limit_wins_over_telegram_cap(self, app_config: AppConfig):
+        # With default message_max_len=3800 and typical envelope overhead,
+        # the operator-configured limit must be the effective body budget.
+        body = "a" * (app_config.message_max_len + 1)
+        result = EmailParser(app_config).format_for_telegram(_make_parsed(body=body))
+        assert len(result) < 4096
+        assert "truncated" in result
