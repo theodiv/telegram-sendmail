@@ -50,8 +50,10 @@ Coverage targets
     - Lines received after the buffer overflows are silently discarded without buffering
 
 `SMTPServer` — callback failure
-    - A "554 5.0.0 Transaction failed" response is sent when on_message raises
-    - The session continues and accepts a subsequent MAIL FROM after a failure
+    - A non-TelegramAPIError exception produces a "554 5.0.0 Transaction failed" response
+    - TelegramAPIError with a retriable status (429, 5xx) produces a "451 4.3.0 Temporary backend failure"
+    - TelegramAPIError with a permanent status (4xx other than 429) or None produces a "554"
+    - The session continues and accepts a subsequent MAIL FROM after any callback failure
 
 `SMTPServer` — null reverse-path
     - MAIL FROM:<> delivers None as the envelope_sender to on_message
@@ -96,6 +98,7 @@ from typing import Any, Literal
 import pytest
 
 from telegram_sendmail.config import AppConfig
+from telegram_sendmail.exceptions import TelegramAPIError
 from telegram_sendmail.smtp import _SHUTDOWN_SENTINEL, SMTPServer
 
 # --------------------------------------------------------------------------
@@ -489,14 +492,55 @@ class TestSMTPDataSizeLimit:
 
 
 class TestSMTPCallbackFailure:
-    def test_callback_exception_produces_554_response(
+    def test_non_telegram_exception_produces_554_response(
         self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
     ):
         smtp_callback.side_effect = RuntimeError("inject delivery failure")
         server = SMTPServer(app_config, on_message=smtp_callback)
         commands = _commands("DATA", "body", ".")
         output = _run_session(server, commands, monkeypatch)
-        assert "554" in output
+        assert "554 5.0.0" in output
+
+    @pytest.mark.parametrize("status_code", [429, 500, 502, 503, 504])
+    def test_retriable_telegram_error_produces_451_response(
+        self,
+        status_code: int,
+        app_config: AppConfig,
+        smtp_callback: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        smtp_callback.side_effect = TelegramAPIError(
+            f"Telegram API error {status_code}", status_code=status_code
+        )
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        commands = _commands("DATA", "body", ".")
+        output = _run_session(server, commands, monkeypatch)
+        assert "451 4.3.0" in output
+
+    @pytest.mark.parametrize("status_code", [400, 401, 403])
+    def test_permanent_telegram_error_produces_554_response(
+        self,
+        status_code: int,
+        app_config: AppConfig,
+        smtp_callback: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        smtp_callback.side_effect = TelegramAPIError(
+            f"Telegram API error {status_code}", status_code=status_code
+        )
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        commands = _commands("DATA", "body", ".")
+        output = _run_session(server, commands, monkeypatch)
+        assert "554 5.0.0" in output
+
+    def test_telegram_error_without_status_code_produces_554_response(
+        self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        smtp_callback.side_effect = TelegramAPIError("connection failed")
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        commands = _commands("DATA", "body", ".")
+        output = _run_session(server, commands, monkeypatch)
+        assert "554 5.0.0" in output
 
     def test_session_continues_after_callback_failure(
         self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
