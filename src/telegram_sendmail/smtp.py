@@ -39,7 +39,7 @@ from enum import Enum, auto
 from typing import Final
 
 from telegram_sendmail.config import AppConfig
-from telegram_sendmail.exceptions import SMTPProtocolError
+from telegram_sendmail.exceptions import SMTPProtocolError, TelegramAPIError
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,7 @@ class _SMTP:
     BAD_SEQUENCE: Final = "503 5.5.1 Bad sequence of commands"
     MSG_TOO_BIG: Final = "552 5.3.4 Message size exceeds fixed maximum message size"
     TRANSACTION_FAIL: Final = "554 5.0.0 Transaction failed"
+    TEMP_FAIL: Final = "451 4.3.0 Temporary backend failure"
     TIMEOUT: Final = "421 4.4.2 Connection timed out"
     SHUTDOWN: Final = "421 4.4.2 Service shutting down"
     INTERNAL_ERROR: Final = "421 4.3.0 Internal server error"
@@ -304,6 +305,13 @@ class SMTPServer:
                 "Message accepted and forwarded (envelope_sender=%s)",
                 envelope_sender or "<>",
             )
+        except TelegramAPIError as exc:
+            logger.error("Message delivery failed: %s", exc)
+            code = exc.status_code
+            if code is not None and (code == 429 or 500 <= code <= 599):
+                self._write(_SMTP.TEMP_FAIL)
+            else:
+                self._write(_SMTP.TRANSACTION_FAIL)
         except Exception as exc:
             logger.error("Message delivery failed: %s", exc)
             self._write(_SMTP.TRANSACTION_FAIL)

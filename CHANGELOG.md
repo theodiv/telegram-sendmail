@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cap the assembled Telegram message at 4096 characters so that
   `message_max_length` values near the API limit no longer cause delivery
   failure. ([#33](https://github.com/theodiv/telegram-sendmail/issues/33))
+- Signal `451 4.3.0 Temporary backend failure` in `-bs` mode when the
+  Telegram API returns a retriable status (429, 5xx) instead of
+  `554 5.0.0 Transaction failed`.
 
 ## [1.2.1] - 2026-03-22
 

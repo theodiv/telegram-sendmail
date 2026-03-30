@@ -347,6 +347,23 @@ completed `DATA` transaction resets state automatically, so multiple
 messages can be delivered in a single session without an explicit `RSET`
 between them.
 
+### Delivery Responses
+
+After the `DATA` terminator (`.`) is received, the server attempts to
+deliver the message to Telegram. The SMTP response code signals the outcome
+to the client:
+
+| Response                              | Meaning                                                              |
+|---------------------------------------|----------------------------------------------------------------------|
+| `250 2.0.0 Ok: queued as ...`         | Message delivered to Telegram successfully                           |
+| `451 4.3.0 Temporary backend failure` | Transient Telegram error (HTTP 429/5xx); client should retry         |
+| `554 5.0.0 Transaction failed`        | Permanent failure (bad request, auth error, or unexpected exception) |
+
+MTA-aware SMTP clients treat `4xx` responses as temporary and re-queue
+the message for later retry. `5xx` responses are permanent; the client
+discards the message. The session continues normally after either
+response — subsequent messages in the same session are not affected.
+
 ### Graceful Shutdown
 
 The server handles `SIGTERM` and `SIGINT` by sending a
