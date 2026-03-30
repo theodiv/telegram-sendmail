@@ -195,15 +195,15 @@ as [telegram-sendmail.ini.example](../telegram-sendmail.ini.example).
 
 All keys in this section are optional. Absent keys use the documented default.
 
-| Key                    | Type  | Default   | Range      | Behaviour                                                                              |
-|------------------------|-------|-----------|------------|----------------------------------------------------------------------------------------|
-| `spool_dir`            | path  | /var/mail | any path   | Parent directory for the per-user spool file; username is appended automatically       |
-| `message_max_length`   | int   | 3800      | 100–4096   | Maximum body character count before truncation at the nearest word boundary            |
-| `smtp_timeout`         | int   | 30        | 5–300      | Seconds to wait for a line of SMTP input; applies only in `-bs` mode                   |
-| `telegram_timeout`     | int   | 10        | 5–60       | Seconds to wait for a Telegram API response per attempt                                |
-| `max_retries`          | int   | 3         | 0–10       | Additional delivery attempts after the first failure on HTTP 429/5xx                   |
-| `backoff_factor`       | float | 0.5       | 0.0–10.0   | Exponential backoff multiplier; pause before attempt *n* is `factor × 2^(n−1)` seconds |
-| `disable_notification` | bool  | false     | true/false | Send messages silently — no sound or banner alert on the recipient's device            |
+| Key                    | Type  | Default   | Range      | Behaviour                                                                                                       |
+|------------------------|-------|-----------|------------|-----------------------------------------------------------------------------------------------------------------|
+| `spool_dir`            | path  | /var/mail | any path   | Parent directory for the per-user spool file; username is appended automatically                                |
+| `message_max_length`   | int   | 3800      | 100–4096   | Maximum body character count before truncation; the total message is further capped at 4096 by the Telegram API |
+| `smtp_timeout`         | int   | 30        | 5–300      | Seconds to wait for a line of SMTP input; applies only in `-bs` mode                                            |
+| `telegram_timeout`     | int   | 10        | 5–60       | Seconds to wait for a Telegram API response per attempt                                                         |
+| `max_retries`          | int   | 3         | 0–10       | Additional delivery attempts after the first failure on HTTP 429/5xx                                            |
+| `backoff_factor`       | float | 0.5       | 0.0–10.0   | Exponential backoff multiplier; pause before attempt *n* is `factor × 2^(n−1)` seconds                          |
+| `disable_notification` | bool  | false     | true/false | Send messages silently — no sound or banner alert on the recipient's device                                     |
 
 The `spool_dir` value has the current user's login name appended
 automatically, producing a final path of `<spool_dir>/<username>`
@@ -419,8 +419,10 @@ implemented in `_deliver()`:
 4. **Format** — The parsed email fields are wrapped in the Telegram HTML
    message envelope. The body is truncated at the nearest word boundary if
    it exceeds `message_max_length`, with a visible truncation notice
-   appended. An attachment notice is appended if the MIME structure
-   contained attachments.
+   appended. The total message (envelope markup, footers, and body) is
+   additionally capped at the Telegram API hard limit of 4096 characters.
+   An attachment notice is appended if the MIME structure contained
+   attachments.
 
 5. **Send** — The formatted message is delivered to the Telegram Bot API
    via HTTPS. Retries with exponential backoff are attempted on HTTP 429
@@ -507,7 +509,9 @@ attachments is reported.
 
 Long bodies are truncated at the nearest word boundary below the configured
 `message_max_length` limit, with a visible `[…message truncated…]` notice
-appended.
+appended. The total assembled message is additionally capped at the Telegram
+API hard limit of 4096 characters, so values of `message_max_length` near
+4096 may result in earlier truncation than the configured value implies.
 
 ## Security Considerations
 

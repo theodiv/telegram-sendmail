@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Cap the assembled Telegram message at 4096 characters so that
+  `message_max_length` values near the API limit no longer cause delivery
+  failure. ([#33](https://github.com/theodiv/telegram-sendmail/issues/33))
+
 ## [1.2.1] - 2026-03-22
 
 ### Fixed

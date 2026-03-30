@@ -48,7 +48,10 @@ spool_dir = /var/mail
 
 ; Maximum character length of the email body forwarded to Telegram.
 ; Bodies exceeding this limit are truncated at the nearest word boundary
-; and a visible "[…message truncated…]" notice is appended.
+; and a visible "[…message truncated…]" notice is appended. The assembled
+; message (envelope markup, footers, and body) is additionally capped at
+; the Telegram API hard limit of 4096 characters, so values near 4096
+; may result in earlier truncation than the configured value implies.
 ;
 ; Valid range: 100 – 4096  |  Default: 3800
 message_max_length = 3800
