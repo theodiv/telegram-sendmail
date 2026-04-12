@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Parse title and sync labels
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const title = context.payload.pull_request.title;
