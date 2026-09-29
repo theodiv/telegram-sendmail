@@ -39,6 +39,7 @@ Coverage targets
 
 `_parse_options`
     - Returns all compiled defaults when the [options] section is absent
+    - Returns a frozen `_ParsedOptions` instance
     - Accepts an in-range message_max_length value verbatim
     - Falls back to the default and warns when message_max_length is outside [100, 4096]
     - Falls back to the default and warns when smtp_timeout is not a valid integer
@@ -108,6 +109,7 @@ from telegram_sendmail.config import (
     _locate_config_file,
     _parse_filters,
     _parse_options,
+    _ParsedOptions,
     _require,
     _resolve_spool_path,
     _validate_range,
@@ -473,21 +475,29 @@ class TestParseOptions:
         default_spool.mkdir()
         monkeypatch.setattr(cfg_module, "_DEFAULT_SPOOL_DIR", default_spool)
         parser = configparser.ConfigParser(interpolation=None)
-        msg_len, smtp_to, tg_to, disable_notif, _spool, max_ret, backoff = (
-            _parse_options(parser, tmp_path / "test.ini")
-        )
-        assert msg_len == _DEFAULT_MESSAGE_MAX_LEN
-        assert smtp_to == _DEFAULT_SMTP_TIMEOUT
-        assert tg_to == _DEFAULT_TELEGRAM_TIMEOUT
-        assert disable_notif == _DEFAULT_DISABLE_NOTIFICATION
-        assert max_ret == _DEFAULT_MAX_RETRIES
-        assert backoff == _DEFAULT_BACKOFF_FACTOR
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.message_max_len == _DEFAULT_MESSAGE_MAX_LEN
+        assert result.smtp_timeout == _DEFAULT_SMTP_TIMEOUT
+        assert result.telegram_timeout == _DEFAULT_TELEGRAM_TIMEOUT
+        assert result.disable_notification == _DEFAULT_DISABLE_NOTIFICATION
+        assert result.max_retries == _DEFAULT_MAX_RETRIES
+        assert result.backoff_factor == _DEFAULT_BACKOFF_FACTOR
+
+    def test_returns_frozen_parsed_options_instance(self, tmp_path: Path):
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        parser = _parser_with(spool_dir=str(spool))
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert isinstance(result, _ParsedOptions)
+        with pytest.raises(AttributeError):
+            result.max_retries = 99  # type: ignore[misc] # frozen dataclass assignment
 
     def test_valid_message_max_length_accepted(self, tmp_path: Path):
         spool = tmp_path / "spool"
         spool.mkdir()
         parser = _parser_with(message_max_length="1000", spool_dir=str(spool))
-        assert _parse_options(parser, tmp_path / "test.ini")[0] == 1000
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.message_max_len == 1000
 
     def test_message_max_length_below_100_falls_back_to_default_with_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -497,7 +507,7 @@ class TestParseOptions:
         parser = _parser_with(message_max_length="50", spool_dir=str(spool))
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
             result = _parse_options(parser, tmp_path / "test.ini")
-        assert result[0] == _DEFAULT_MESSAGE_MAX_LEN
+        assert result.message_max_len == _DEFAULT_MESSAGE_MAX_LEN
         assert any("message_max_length" in r.message for r in caplog.records)
 
     def test_message_max_length_above_4096_falls_back_to_default_with_warning(
@@ -508,7 +518,7 @@ class TestParseOptions:
         parser = _parser_with(message_max_length="9999", spool_dir=str(spool))
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
             result = _parse_options(parser, tmp_path / "test.ini")
-        assert result[0] == _DEFAULT_MESSAGE_MAX_LEN
+        assert result.message_max_len == _DEFAULT_MESSAGE_MAX_LEN
 
     def test_non_integer_smtp_timeout_falls_back_to_default_with_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -518,20 +528,22 @@ class TestParseOptions:
         parser = _parser_with(smtp_timeout="not_a_number", spool_dir=str(spool))
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
             result = _parse_options(parser, tmp_path / "test.ini")
-        assert result[1] == _DEFAULT_SMTP_TIMEOUT
+        assert result.smtp_timeout == _DEFAULT_SMTP_TIMEOUT
         assert any("smtp_timeout" in r.message for r in caplog.records)
 
     def test_disable_notification_true_parsed_as_bool(self, tmp_path: Path):
         spool = tmp_path / "spool"
         spool.mkdir()
         parser = _parser_with(disable_notification="true", spool_dir=str(spool))
-        assert _parse_options(parser, tmp_path / "test.ini")[3] is True
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.disable_notification is True
 
     def test_disable_notification_false_parsed_as_bool(self, tmp_path: Path):
         spool = tmp_path / "spool"
         spool.mkdir()
         parser = _parser_with(disable_notification="false", spool_dir=str(spool))
-        assert _parse_options(parser, tmp_path / "test.ini")[3] is False
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.disable_notification is False
 
     def test_invalid_disable_notification_falls_back_to_default_with_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -541,14 +553,15 @@ class TestParseOptions:
         parser = _parser_with(disable_notification="not_a_bool", spool_dir=str(spool))
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
             result = _parse_options(parser, tmp_path / "test.ini")
-        assert result[3] == _DEFAULT_DISABLE_NOTIFICATION
+        assert result.disable_notification == _DEFAULT_DISABLE_NOTIFICATION
         assert any("disable_notification" in r.message for r in caplog.records)
 
     def test_valid_backoff_factor_accepted(self, tmp_path: Path):
         spool = tmp_path / "spool"
         spool.mkdir()
         parser = _parser_with(backoff_factor="2.5", spool_dir=str(spool))
-        assert _parse_options(parser, tmp_path / "test.ini")[6] == 2.5
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.backoff_factor == 2.5
 
     def test_backoff_factor_above_10_falls_back_to_default_with_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -559,19 +572,20 @@ class TestParseOptions:
         parser = _parser_with(backoff_factor="15.0", spool_dir=str(spool))
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
             result = _parse_options(parser, tmp_path / "test.ini")
-        assert result[6] == _DEFAULT_BACKOFF_FACTOR
+        assert result.backoff_factor == _DEFAULT_BACKOFF_FACTOR
 
     def test_valid_max_retries_accepted(self, tmp_path: Path):
         spool = tmp_path / "spool"
         spool.mkdir()
         parser = _parser_with(max_retries="5", spool_dir=str(spool))
-        assert _parse_options(parser, tmp_path / "test.ini")[5] == 5
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.max_retries == 5
 
     def test_custom_spool_dir_becomes_parent_of_resolved_path(self, tmp_path: Path):
         spool = tmp_path / "custom_spool"
         spool.mkdir()
         parser = _parser_with(spool_dir=str(spool))
-        spool_path = _parse_options(parser, tmp_path / "test.ini")[4]
+        spool_path = _parse_options(parser, tmp_path / "test.ini").spool_path
         assert spool_path.parent == spool
         assert spool_path.name == getpass.getuser()
 
@@ -757,7 +771,6 @@ class TestConfigLoaderLoad:
         user_ini.write_text(_minimal_ini())
         user_ini.chmod(0o600)
         config = ConfigLoader.load()
-        # frozen=True raises AttributeError (FrozenInstanceError is a subclass).
         with pytest.raises(AttributeError):
             config.token = "mutated"  # type: ignore[misc] # frozen dataclass assignment
 

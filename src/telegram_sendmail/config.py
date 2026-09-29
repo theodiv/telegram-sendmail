@@ -102,6 +102,31 @@ class AppConfig:
     suppress_sender: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class _ParsedOptions:
+    """
+    Validated `[options]` values, ready to be merged into `AppConfig`.
+
+    Attributes:
+        message_max_len:      Maximum body character count before truncation.
+        smtp_timeout:         Seconds to wait for an SMTP client command.
+        telegram_timeout:     Seconds to wait for a Telegram API response.
+        disable_notification: Whether to suppress Telegram push notifications.
+        spool_path:           Fully resolved path to the per-user spool file.
+        max_retries:          Number of retry attempts for failed Telegram API
+                              requests.
+        backoff_factor:       Multiplier for `urllib3`'s exponential backoff.
+    """
+
+    message_max_len: int
+    smtp_timeout: int
+    telegram_timeout: int
+    disable_notification: bool
+    spool_path: Path
+    max_retries: int
+    backoff_factor: float
+
+
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
@@ -313,7 +338,7 @@ def _require(
 def _parse_options(
     parser: configparser.ConfigParser,
     config_file: Path,
-) -> tuple[int, int, int, bool, Path, int, float]:
+) -> _ParsedOptions:
     """
     Extract and validate all `[options]` keys from a loaded `ConfigParser`.
 
@@ -323,8 +348,7 @@ def _parse_options(
     single bad option does not block delivery.
 
     Returns:
-        A tuple of `(message_max_len, smtp_timeout, telegram_timeout,
-        disable_notification, spool_path, max_retries, backoff_factor)`.
+        A `_ParsedOptions` instance containing the validated options.
     """
     message_max_len: int = _DEFAULT_MESSAGE_MAX_LEN
     smtp_timeout: int = _DEFAULT_SMTP_TIMEOUT
@@ -335,14 +359,14 @@ def _parse_options(
     backoff_factor: float = _DEFAULT_BACKOFF_FACTOR
 
     if not parser.has_section("options"):
-        return (
-            message_max_len,
-            smtp_timeout,
-            telegram_timeout,
-            disable_notification,
-            _resolve_spool_path(raw_spool_dir),
-            max_retries,
-            backoff_factor,
+        return _ParsedOptions(
+            message_max_len=message_max_len,
+            smtp_timeout=smtp_timeout,
+            telegram_timeout=telegram_timeout,
+            disable_notification=disable_notification,
+            spool_path=_resolve_spool_path(raw_spool_dir),
+            max_retries=max_retries,
+            backoff_factor=backoff_factor,
         )
 
     def _get_int(key: str, default: int, bounds: tuple[int, int]) -> int:
@@ -415,14 +439,14 @@ def _parse_options(
     if parser.has_option("options", "spool_dir"):
         raw_spool_dir = parser.get("options", "spool_dir").strip() or None
 
-    return (
-        message_max_len,
-        smtp_timeout,
-        telegram_timeout,
-        disable_notification,
-        _resolve_spool_path(raw_spool_dir),
-        max_retries,
-        backoff_factor,
+    return _ParsedOptions(
+        message_max_len=message_max_len,
+        smtp_timeout=smtp_timeout,
+        telegram_timeout=telegram_timeout,
+        disable_notification=disable_notification,
+        spool_path=_resolve_spool_path(raw_spool_dir),
+        max_retries=max_retries,
+        backoff_factor=backoff_factor,
     )
 
 
@@ -515,16 +539,7 @@ class ConfigLoader:
         token = _require(parser, "telegram", "token", config_file)
         chat_id = _require(parser, "telegram", "chat_id", config_file)
 
-        (
-            message_max_len,
-            smtp_timeout,
-            telegram_timeout,
-            disable_notification,
-            spool_path,
-            max_retries,
-            backoff_factor,
-        ) = _parse_options(parser, config_file)
-
+        options = _parse_options(parser, config_file)
         suppress_subject, suppress_sender = _parse_filters(parser)
 
         logger.debug("Configuration loaded successfully from '%s'", config_file)
@@ -532,13 +547,13 @@ class ConfigLoader:
         return AppConfig(
             token=token,
             chat_id=chat_id,
-            message_max_len=message_max_len,
-            smtp_timeout=smtp_timeout,
-            telegram_timeout=telegram_timeout,
-            disable_notification=disable_notification,
-            spool_path=spool_path,
-            max_retries=max_retries,
-            backoff_factor=backoff_factor,
+            message_max_len=options.message_max_len,
+            smtp_timeout=options.smtp_timeout,
+            telegram_timeout=options.telegram_timeout,
+            disable_notification=options.disable_notification,
+            spool_path=options.spool_path,
+            max_retries=options.max_retries,
+            backoff_factor=options.backoff_factor,
             suppress_subject=suppress_subject,
             suppress_sender=suppress_sender,
         )
