@@ -52,6 +52,7 @@ Coverage targets
 
 `_parse_filters`
     - Returns empty tuples when the [filters] section is absent or has no keys
+    - Returns a frozen `_ParsedFilters` instance rather than a positional tuple
     - Parses a single suppress_subject or suppress_sender pattern
     - Parses multiline values into separate patterns
     - Strips whitespace and drops blank lines from pattern lists
@@ -109,6 +110,7 @@ from telegram_sendmail.config import (
     _locate_config_file,
     _parse_filters,
     _parse_options,
+    _ParsedFilters,
     _ParsedOptions,
     _require,
     _resolve_spool_path,
@@ -598,45 +600,56 @@ class TestParseOptions:
 class TestParseFilters:
     def test_returns_empty_tuples_when_filters_section_absent(self):
         parser = configparser.ConfigParser(interpolation=None)
-        assert _parse_filters(parser) == ((), ())
+        result = _parse_filters(parser)
+        assert result.suppress_subject == ()
+        assert result.suppress_sender == ()
 
     def test_returns_empty_tuples_when_filters_section_has_no_keys(self):
         parser = configparser.ConfigParser(interpolation=None)
         parser.add_section("filters")
-        assert _parse_filters(parser) == ((), ())
+        result = _parse_filters(parser)
+        assert result.suppress_subject == ()
+        assert result.suppress_sender == ()
+
+    def test_returns_frozen_parsed_filters_instance(self):
+        parser = _parser_with(suppress_subject="cron *")
+        result = _parse_filters(parser)
+        assert isinstance(result, _ParsedFilters)
+        with pytest.raises(AttributeError):
+            result.suppress_subject = ()  # type: ignore[misc] # frozen dataclass assignment
 
     def test_parses_single_suppress_subject_pattern(self):
         parser = _parser_with(suppress_subject="cron *")
-        subjects, senders = _parse_filters(parser)
-        assert subjects == ("cron *",)
-        assert senders == ()
+        result = _parse_filters(parser)
+        assert result.suppress_subject == ("cron *",)
+        assert result.suppress_sender == ()
 
     def test_parses_single_suppress_sender_pattern(self):
         parser = _parser_with(suppress_sender="*@noreply.local")
-        subjects, senders = _parse_filters(parser)
-        assert subjects == ()
-        assert senders == ("*@noreply.local",)
+        result = _parse_filters(parser)
+        assert result.suppress_subject == ()
+        assert result.suppress_sender == ("*@noreply.local",)
 
     def test_parses_multiline_suppress_subject_patterns(self):
         parser = _parser_with(suppress_subject="cron *\n*logwatch*\n  daily backup*  ")
-        subjects, _ = _parse_filters(parser)
-        assert subjects == ("cron *", "*logwatch*", "daily backup*")
+        result = _parse_filters(parser)
+        assert result.suppress_subject == ("cron *", "*logwatch*", "daily backup*")
 
     def test_parses_multiline_suppress_sender_patterns(self):
         parser = _parser_with(suppress_sender="*@noreply.*\nroot@*\n  daemon@local  ")
-        _, senders = _parse_filters(parser)
-        assert senders == ("*@noreply.*", "root@*", "daemon@local")
+        result = _parse_filters(parser)
+        assert result.suppress_sender == ("*@noreply.*", "root@*", "daemon@local")
 
     def test_strips_whitespace_and_drops_blank_lines(self):
         parser = _parser_with(suppress_subject="\n  \n  pattern*  \n\n  *glob  \n  ")
-        subjects, _ = _parse_filters(parser)
-        assert subjects == ("pattern*", "*glob")
+        result = _parse_filters(parser)
+        assert result.suppress_subject == ("pattern*", "*glob")
 
     def test_both_keys_parsed_together(self):
         parser = _parser_with(suppress_subject="subj*", suppress_sender="sender@*")
-        subjects, senders = _parse_filters(parser)
-        assert subjects == ("subj*",)
-        assert senders == ("sender@*",)
+        result = _parse_filters(parser)
+        assert result.suppress_subject == ("subj*",)
+        assert result.suppress_sender == ("sender@*",)
 
     def test_logs_debug_when_patterns_loaded(self, caplog: pytest.LogCaptureFixture):
         parser = _parser_with(suppress_subject="cron *\n*logwatch*")

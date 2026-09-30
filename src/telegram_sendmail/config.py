@@ -127,6 +127,22 @@ class _ParsedOptions:
     backoff_factor: float
 
 
+@dataclass(frozen=True)
+class _ParsedFilters:
+    """
+    Validated `[filters]` glob patterns, ready to be merged into `AppConfig`.
+
+    Attributes:
+        suppress_subject: Case-insensitive glob patterns matched against
+                          the Subject header.
+        suppress_sender:  Case-insensitive glob patterns matched against
+                          the From header.
+    """
+
+    suppress_subject: tuple[str, ...]
+    suppress_sender: tuple[str, ...]
+
+
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
@@ -452,7 +468,7 @@ def _parse_options(
 
 def _parse_filters(
     parser: configparser.ConfigParser,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> _ParsedFilters:
     """
     Extract glob patterns from the `[filters]` INI section.
 
@@ -462,10 +478,10 @@ def _parse_filters(
     so that delivery is never blocked by a filter misconfiguration.
 
     Returns:
-        A tuple of `(suppress_subject, suppress_sender)`.
+        A `_ParsedFilters` instance containing the validated glob patterns.
     """
     if not parser.has_section("filters"):
-        return ((), ())
+        return _ParsedFilters(suppress_subject=(), suppress_sender=())
 
     def _read_patterns(key: str) -> tuple[str, ...]:
         if not parser.has_option("filters", key):
@@ -480,9 +496,9 @@ def _parse_filters(
             )
         return patterns
 
-    return (
-        _read_patterns("suppress_subject"),
-        _read_patterns("suppress_sender"),
+    return _ParsedFilters(
+        suppress_subject=_read_patterns("suppress_subject"),
+        suppress_sender=_read_patterns("suppress_sender"),
     )
 
 
@@ -540,7 +556,7 @@ class ConfigLoader:
         chat_id = _require(parser, "telegram", "chat_id", config_file)
 
         options = _parse_options(parser, config_file)
-        suppress_subject, suppress_sender = _parse_filters(parser)
+        filters = _parse_filters(parser)
 
         logger.debug("Configuration loaded successfully from '%s'", config_file)
 
@@ -554,6 +570,6 @@ class ConfigLoader:
             spool_path=options.spool_path,
             max_retries=options.max_retries,
             backoff_factor=options.backoff_factor,
-            suppress_subject=suppress_subject,
-            suppress_sender=suppress_sender,
+            suppress_subject=filters.suppress_subject,
+            suppress_sender=filters.suppress_sender,
         )
