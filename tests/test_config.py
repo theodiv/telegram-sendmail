@@ -49,6 +49,10 @@ Coverage targets
     - Falls back to the default and warns when backoff_factor exceeds [0.0, 10.0]
     - Accepts a valid max_retries integer
     - Uses the configured spool_dir as the parent of the resolved spool path
+    - Falls back to the default and warns when spool_enabled is not a valid boolean
+    - Resolves spool_path when spool_enabled is true
+    - Returns spool_path None when spool_enabled is false
+    - Does not create the fallback directory or emit a WARNING when spool_enabled is false
 
 `_parse_filters`
     - Returns empty tuples when the [filters] section is absent or has no keys
@@ -73,6 +77,7 @@ Coverage targets
     - Loads an explicit path instead of the user config when both are present
     - Returns a frozen (immutable) AppConfig instance
     - Resolves spool_path to an absolute path under the configured spool_dir
+    - Returns spool_path None and creates no fallback directory when spool_enabled is false
 
 Design notes
 ------------
@@ -84,8 +89,13 @@ Design notes
   DAC permission checks on Linux and these tests would give false positives.
 - _parse_options is tested with directly constructed ConfigParser objects to isolate
   option-parsing behavior from the surrounding file-discovery and path-resolution logic.
-  A writable tmp_path subdirectory is always injected as spool_dir in these tests to
+  A writable tmp_path subdirectory is injected as spool_dir in these tests to
   prevent _resolve_spool_path from attempting to access /var/mail on the host.
+- spool_enabled=false tests point spool_dir at a missing tmp_path subdirectory
+  instead. A missing directory fails the writability check even as root, so a
+  regression that still resolved the path would hit the fallback branch and be
+  caught without a UID 0 skip; `_FALLBACK_SPOOL_BASE` is redirected into tmp_path
+  so that regression cannot create `/tmp/.telegram-sendmail-spool`.
 - The missing-explicit-path test writes a valid user config first, so a regression
   that fell back to discovery would load it and return instead of raising.
 """
@@ -489,6 +499,7 @@ class TestParseOptions:
         assert result.disable_notification == _DEFAULT_DISABLE_NOTIFICATION
         assert result.max_retries == _DEFAULT_MAX_RETRIES
         assert result.backoff_factor == _DEFAULT_BACKOFF_FACTOR
+        assert result.spool_path == default_spool / getpass.getuser()
 
     def test_returns_frozen_parsed_options_instance(self, tmp_path: Path):
         spool = tmp_path / "spool"
@@ -595,6 +606,50 @@ class TestParseOptions:
         spool_path = _parse_options(parser, tmp_path / "test.ini").spool_path
         assert spool_path.parent == spool
         assert spool_path.name == getpass.getuser()
+
+    def test_invalid_spool_enabled_falls_back_to_default_with_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        parser = _parser_with(spool_enabled="not_a_bool", spool_dir=str(spool))
+        with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
+            result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.spool_path == spool / getpass.getuser()
+        assert any("spool_enabled" in r.message for r in caplog.records)
+
+    def test_spool_enabled_true_resolves_spool_path(self, tmp_path: Path):
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        parser = _parser_with(spool_enabled="true", spool_dir=str(spool))
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.spool_path == spool / getpass.getuser()
+
+    def test_spool_enabled_false_returns_none_spool_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(cfg_module, "_FALLBACK_SPOOL_BASE", tmp_path / "fallback")
+        parser = _parser_with(
+            spool_enabled="false", spool_dir=str(tmp_path / "missing")
+        )
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.spool_path is None
+
+    def test_spool_enabled_false_skips_fallback_creation_and_warning(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        fallback = tmp_path / "fallback"
+        monkeypatch.setattr(cfg_module, "_FALLBACK_SPOOL_BASE", fallback)
+        parser = _parser_with(
+            spool_enabled="false", spool_dir=str(tmp_path / "missing")
+        )
+        with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
+            _parse_options(parser, tmp_path / "test.ini")
+        assert not fallback.exists()
+        assert not caplog.records
 
 
 # --------------------------------------------------------------------------
@@ -845,3 +900,18 @@ class TestConfigLoaderLoad:
         config = ConfigLoader.load()
         assert config.spool_path.is_absolute()
         assert config.spool_path.parent == spool_dir
+
+    def test_spool_enabled_false_yields_no_spool_path_or_fallback_directory(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
+    ):
+        user_ini = patched_config_constants["user_ini"]
+        user_ini.write_text(
+            "[telegram]\ntoken = t\nchat_id = -1\n"
+            "[options]\n"
+            "spool_enabled = false\n"
+            f"spool_dir = {tmp_path / 'missing'}\n"
+        )
+        user_ini.chmod(0o600)
+        config = ConfigLoader.load()
+        assert config.spool_path is None
+        assert not patched_config_constants["fallback_dir"].exists()

@@ -27,6 +27,7 @@ Coverage targets
     - Skips format_for_telegram and TelegramClient.send when _is_suppressed returns True
     - Still invokes MailSpooler.write and EmailParser.parse for suppressed messages
     - Proceeds through the full pipeline when no suppression pattern matches
+    - Parses and sends without writing any file when spooling is disabled
     - Catches SpoolError without propagating it so delivery continues
     - Invokes EmailParser.parse and TelegramClient.send even when the spool write fails
     - Logs a WARNING via the spool logger before raising SpoolError
@@ -104,6 +105,9 @@ Design notes
   The missing-file test activates `requests_mock` with no routes, so a
   regression that fell back to a host config fails instead of reaching the
   network.
+- The disabled-spooling `_deliver` test runs the real `MailSpooler` instead of
+  `_TrackingSpooler`, because the stub records a call whether or not a write
+  happens; only an empty `tmp_path` proves the pipeline wrote nothing.
 - `TestTokenRedactFilter` constructs `logging.LogRecord` instances directly
   rather than emitting through a live logger, because the test target is the
   filter's string replacement logic, not the logging infrastructure.
@@ -519,6 +523,20 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
         _deliver("raw email", None, config)
         assert self._stages == ["spool", "parse"]
+
+    def test_disabled_spool_still_parses_and_sends_without_writing(
+        self,
+        app_config: AppConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        type(self)._stages = []
+        config = replace(app_config, spool_path=None)
+        monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
+        monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
+        _deliver("raw email", None, config)
+        assert self._stages == ["parse", "send"]
+        assert not any(tmp_path.iterdir())
 
     def test_spool_error_does_not_propagate(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch

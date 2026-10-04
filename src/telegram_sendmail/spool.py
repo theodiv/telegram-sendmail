@@ -6,10 +6,11 @@ Public surface
 - `MailSpooler` — archives raw email content to a per-user spool file.
 
 The spooler is intentionally decoupled from the Telegram delivery path: it
-runs first, so the original message is always preserved even if parsing or
-network delivery subsequently fails. A `SpoolError` is non-fatal from
-the caller's perspective; `__main__` logs it at WARNING level and
-continues with Telegram delivery.
+runs first, so the original message is preserved even if parsing or
+network delivery subsequently fails. Operators can opt out with
+`spool_enabled = false`, in which case nothing is written to disk. A
+`SpoolError` is non-fatal from the caller's perspective; `__main__` logs it
+at WARNING level and continues with Telegram delivery.
 """
 
 import logging
@@ -44,6 +45,11 @@ class MailSpooler:
     against the path, which would be vulnerable to a TOCTOU race on
     systems where the spool directory is world-writable.
 
+    A `None` spool path means the operator disabled spooling with
+    `spool_enabled = false`. Handling that state here rather than in the
+    delivery pipeline keeps every `None` check on the spool path inside the
+    one module that consumes it.
+
     Usage::
 
         spooler = MailSpooler(config)
@@ -51,7 +57,7 @@ class MailSpooler:
     """
 
     def __init__(self, config: AppConfig) -> None:
-        self._spool_path: Path = config.spool_path
+        self._spool_path: Path | None = config.spool_path
 
     def write(self, raw_email: str) -> None:
         """
@@ -68,6 +74,9 @@ class MailSpooler:
         kernel raises `OSError(ELOOP)`, which is caught and re-raised as
         `SpoolError`.
 
+        Return without creating any file or directory when spooling is
+        disabled.
+
         Args:
             raw_email: Raw RFC 2822 email string exactly as received from
                        `stdin` or the SMTP DATA stream.
@@ -78,6 +87,10 @@ class MailSpooler:
                         spool path). The caller is expected to log this at
                         WARNING level and continue processing.
         """
+        if self._spool_path is None:
+            logger.debug("Spool write skipped (spool_enabled=false)")
+            return
+
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S %z")
         separator = f"\n{_SEPARATOR}\n{timestamp}\n{_SEPARATOR}\n"
 

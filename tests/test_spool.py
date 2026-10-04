@@ -30,12 +30,19 @@ Coverage targets
     - The WARNING log message references the spool file path
     - SpoolError wraps the underlying OSError as its cause
 
+`MailSpooler.write` — disabled spooling
+    - Creates no file or directory when the spool path is None
+    - Logs a DEBUG message containing "spool_enabled=false" when the spool path is None
+
 Design notes
 ------------
-- All tests use `tmp_spool_path` (tmp_path/"spool"/"testuser") via
+- All write-path tests use `tmp_spool_path` (tmp_path/"spool"/"testuser") via
   `dataclasses.replace(app_config, spool_path=tmp_spool_path)`. The parent
   directory does not pre-exist, allowing the "creates parent on demand" path
   to run naturally without any extra setup.
+- Disabled-spooling tests assert that `tmp_path` stays empty rather than
+  checking one expected path, so a regression that wrote anywhere under the
+  test directory (including the `app_config` default spool path) is caught.
 - File permission enforcement tests (0600, 0700) are skipped on UID 0 because
   root bypasses DAC permission checks; the assertions would always pass and
   provide false confidence.
@@ -51,6 +58,7 @@ Design notes
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import stat
 from pathlib import Path
@@ -66,7 +74,7 @@ from telegram_sendmail.spool import MailSpooler
 # --------------------------------------------------------------------------
 
 
-def _make_spooler(app_config: AppConfig, spool_path: Path) -> MailSpooler:
+def _make_spooler(app_config: AppConfig, spool_path: Path | None) -> MailSpooler:
     """Return a MailSpooler wired to the given spool_path."""
     config = dataclasses.replace(app_config, spool_path=spool_path)
     return MailSpooler(config)
@@ -278,8 +286,6 @@ class TestMailSpoolerErrorHandling:
         app_config: AppConfig,
         caplog: pytest.LogCaptureFixture,
     ):
-        import logging
-
         locked_dir = tmp_path / "locked2"
         locked_dir.mkdir()
         locked_dir.chmod(0o555)
@@ -301,8 +307,6 @@ class TestMailSpoolerErrorHandling:
         app_config: AppConfig,
         caplog: pytest.LogCaptureFixture,
     ):
-        import logging
-
         locked_dir = tmp_path / "locked3"
         locked_dir.mkdir()
         locked_dir.chmod(0o555)
@@ -334,3 +338,26 @@ class TestMailSpoolerErrorHandling:
             locked_dir.chmod(0o755)
         # SpoolError must chain the original OSError for debuggability.
         assert isinstance(exc_info.value.__cause__, OSError)
+
+
+# --------------------------------------------------------------------------
+# Disabled spooling
+# --------------------------------------------------------------------------
+
+
+class TestMailSpoolerDisabled:
+    def test_write_creates_no_file_or_directory_when_spool_path_is_none(
+        self, tmp_path: Path, app_config: AppConfig
+    ):
+        _make_spooler(app_config, None).write("email body")
+        assert not any(tmp_path.iterdir())
+
+    def test_write_logs_debug_when_spool_path_is_none(
+        self, app_config: AppConfig, caplog: pytest.LogCaptureFixture
+    ):
+        with caplog.at_level(logging.DEBUG, logger="telegram_sendmail.spool"):
+            _make_spooler(app_config, None).write("email body")
+        assert any(
+            r.levelname == "DEBUG" and "spool_enabled=false" in r.message
+            for r in caplog.records
+        )

@@ -41,6 +41,7 @@ _DEFAULT_MESSAGE_MAX_LEN: int = 3800
 _DEFAULT_SMTP_TIMEOUT: int = 30
 _DEFAULT_TELEGRAM_TIMEOUT: int = 10
 _DEFAULT_DISABLE_NOTIFICATION: bool = False
+_DEFAULT_SPOOL_ENABLED: bool = True
 
 _MESSAGE_MAX_LEN_BOUNDS: tuple[int, int] = (100, 4096)
 _SMTP_TIMEOUT_BOUNDS: tuple[int, int] = (5, 300)
@@ -75,7 +76,9 @@ class AppConfig:
         telegram_timeout:     Seconds to wait for a Telegram API response.
         disable_notification: Whether to suppress Telegram push notifications.
         spool_path:           Fully resolved path to the per-user spool file,
-                              guaranteed to be writable at construction time.
+                              guaranteed to be writable at construction time,
+                              or `None` when `spool_enabled = false` disables
+                              mail spooling.
         max_retries:          Number of retry attempts for failed Telegram API
                               requests before raising `TelegramAPIError`.
         backoff_factor:       Multiplier applied between retry attempts by
@@ -84,7 +87,8 @@ class AppConfig:
                               `backoff_factor * (2 ** (n - 1))` seconds.
         suppress_subject:     Case-insensitive glob patterns matched against
                               the Subject header. Matching messages are
-                              spooled but skipped for Telegram delivery.
+                              skipped for Telegram delivery; spooling is
+                              unaffected.
         suppress_sender:      Case-insensitive glob patterns matched against
                               the From header. Same suppression semantics as
                               `suppress_subject`.
@@ -96,7 +100,7 @@ class AppConfig:
     smtp_timeout: int
     telegram_timeout: int
     disable_notification: bool
-    spool_path: Path
+    spool_path: Path | None
     max_retries: int
     backoff_factor: float
     suppress_subject: tuple[str, ...] = ()
@@ -113,7 +117,8 @@ class _ParsedOptions:
         smtp_timeout:         Seconds to wait for an SMTP client command.
         telegram_timeout:     Seconds to wait for a Telegram API response.
         disable_notification: Whether to suppress Telegram push notifications.
-        spool_path:           Fully resolved path to the per-user spool file.
+        spool_path:           Fully resolved path to the per-user spool file,
+                              or `None` when spooling is disabled.
         max_retries:          Number of retry attempts for failed Telegram API
                               requests.
         backoff_factor:       Multiplier for `urllib3`'s exponential backoff.
@@ -123,7 +128,7 @@ class _ParsedOptions:
     smtp_timeout: int
     telegram_timeout: int
     disable_notification: bool
-    spool_path: Path
+    spool_path: Path | None
     max_retries: int
     backoff_factor: float
 
@@ -364,6 +369,11 @@ def _parse_options(
     This function never raises — it degrades gracefully to defaults so that a
     single bad option does not block delivery.
 
+    Spool path resolution runs only when `spool_enabled` is true. Resolving
+    probes `spool_dir` for writability and may create the `/tmp` fallback,
+    so a disabled spool must skip it to leave no directory and no fallback
+    `WARNING` behind.
+
     Returns:
         A `_ParsedOptions` instance containing the validated options.
     """
@@ -371,6 +381,7 @@ def _parse_options(
     smtp_timeout: int = _DEFAULT_SMTP_TIMEOUT
     telegram_timeout: int = _DEFAULT_TELEGRAM_TIMEOUT
     disable_notification: bool = _DEFAULT_DISABLE_NOTIFICATION
+    spool_enabled: bool = _DEFAULT_SPOOL_ENABLED
     raw_spool_dir: str | None = None
     max_retries: int = _DEFAULT_MAX_RETRIES
     backoff_factor: float = _DEFAULT_BACKOFF_FACTOR
@@ -453,6 +464,17 @@ def _parse_options(
                 _DEFAULT_DISABLE_NOTIFICATION,
             )
 
+    if parser.has_option("options", "spool_enabled"):
+        try:
+            spool_enabled = parser.getboolean("options", "spool_enabled")
+        except ValueError:
+            logger.warning(
+                "Config option 'spool_enabled' in %s is not a valid boolean; "
+                "using default %s",
+                config_file,
+                _DEFAULT_SPOOL_ENABLED,
+            )
+
     if parser.has_option("options", "spool_dir"):
         raw_spool_dir = parser.get("options", "spool_dir").strip() or None
 
@@ -461,7 +483,7 @@ def _parse_options(
         smtp_timeout=smtp_timeout,
         telegram_timeout=telegram_timeout,
         disable_notification=disable_notification,
-        spool_path=_resolve_spool_path(raw_spool_dir),
+        spool_path=_resolve_spool_path(raw_spool_dir) if spool_enabled else None,
         max_retries=max_retries,
         backoff_factor=backoff_factor,
     )

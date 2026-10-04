@@ -47,9 +47,9 @@ standard pipe interface used by cron, logwatch, fail2ban, and the majority
 of Unix system daemons, as well as via a minimal SMTP server mode for
 applications that speak SMTP directly to the `sendmail` binary.
 
-Every raw email is archived to a local spool file before any network call
-is attempted, ensuring zero data loss even when Telegram is temporarily
-unreachable. The tool ships as a standalone binary with no runtime
+By default, every raw email is archived to a local spool file before any
+network call is attempted, ensuring zero data loss even when Telegram is
+temporarily unreachable. The tool ships as a standalone binary with no runtime
 dependencies and supports all `sendmail` flags that system daemons use in
 practice, making it suitable for headless servers, containers, and
 appliances where a full MTA is unnecessary overhead.
@@ -202,6 +202,7 @@ All keys in this section are optional. Absent keys use the documented default.
 
 | Key                    | Type  | Default   | Range      | Behaviour                                                                                                       |
 |------------------------|-------|-----------|------------|-----------------------------------------------------------------------------------------------------------------|
+| `spool_enabled`        | bool  | true      | true/false | Archive every raw email to the spool file; `false` disables spooling and ignores `spool_dir`                    |
 | `spool_dir`            | path  | /var/mail | any path   | Parent directory for the per-user spool file; username is appended automatically                                |
 | `message_max_length`   | int   | 3800      | 100–4096   | Maximum body character count before truncation; the total message is further capped at 4096 by the Telegram API |
 | `smtp_timeout`         | int   | 30        | 5–300      | Seconds to wait for a line of SMTP input; applies only in `-bs` mode                                            |
@@ -216,6 +217,11 @@ automatically, producing a final path of `<spool_dir>/<username>`
 runtime, the tool falls back to `/tmp/.telegram-sendmail-spool/<username>`
 and logs a `WARNING`. This hidden subdirectory is created automatically with
 `0700` permissions so that only the owning user can read its contents.
+
+Setting `spool_enabled = false` disables mail spooling entirely: no spool
+file, spool directory, or `/tmp` fallback is created, `spool_dir` is ignored,
+and no spool `WARNING` is logged. Telegram delivery is unaffected. Invalid
+values log a `WARNING` and fall back to `true`.
 
 The `backoff_factor` controls the pause between retry attempts using
 `urllib3`'s exponential backoff algorithm. The effective sleep before
@@ -257,8 +263,8 @@ suppress_sender =
 Pattern matching runs against the fully resolved sender and subject —
 including CLI overrides and RFC 2047 decoding — so patterns match exactly
 what would appear in the Telegram message. Messages matching a suppression
-pattern are still archived to the spool file; only the Telegram delivery
-step is skipped.
+pattern are still archived to the spool file unless `spool_enabled = false`;
+only the Telegram delivery step is skipped.
 
 ## Registering as the System `sendmail`
 
@@ -426,7 +432,8 @@ implemented in `_deliver()`:
    any other processing occurs. This ensures the original message is always
    preserved on disk regardless of whether downstream stages succeed or
    fail. A `SpoolError` is non-fatal: a spool failure is logged at
-   `WARNING` level and delivery continues.
+   `WARNING` level and delivery continues. The stage is skipped when
+   `spool_enabled = false`.
 
 2. **Parse** — The raw RFC 2822 email string is decoded from its MIME
    structure. The body is extracted (preferring `text/plain`, falling back
@@ -437,7 +444,8 @@ implemented in `_deliver()`:
 3. **Filter** — The resolved Subject and From header values are checked
    against the configured suppression patterns. If any pattern matches, the
    message is logged at `DEBUG` level and the pipeline returns early without
-   sending to Telegram. The spool write from stage 1 is not affected.
+   sending to Telegram. The spool write from stage 1, when enabled, is not
+   affected.
 
 4. **Format** — The parsed email fields are wrapped in the Telegram HTML
    message envelope. The body is truncated at the nearest word boundary if
@@ -453,10 +461,10 @@ implemented in `_deliver()`:
 
 ## Mail Spooling
 
-Every raw email is written to a local spool file before any Telegram API
-call is attempted. The spool serves as a durable archive: if Telegram
-delivery fails, the original message is preserved on disk for manual
-recovery or re-delivery.
+By default, every raw email is written to a local spool file before any
+Telegram API call is attempted. The spool serves as a durable archive: if
+Telegram delivery fails, the original message is preserved on disk for
+manual recovery or re-delivery.
 
 The spool file path is derived as `<spool_dir>/<username>`, where
 `<username>` is the current user's login name (e.g. `/var/mail/root`). Each
@@ -486,6 +494,14 @@ a symlink at the spool path.
 during spool writes is logged at `WARNING` level and never silently drops
 a Telegram notification. The message proceeds through the rest of the
 delivery pipeline regardless.
+
+Spooling is disabled with `spool_enabled = false` in `[options]` — for
+read-only filesystems, ephemeral containers, or hosts with a no-retention
+policy. No spool file, spool directory, or `/tmp` fallback is created and
+`spool_dir` is ignored. A disabled spool is not a failure, so no `WARNING`
+is emitted; each skipped write is logged at `DEBUG` level. Messages are
+still forwarded to Telegram, but a failed delivery leaves no on-disk copy
+for recovery.
 
 ## HTML Processing Pipeline
 
@@ -687,10 +703,12 @@ instructions in
 
 #### *Spool directory warning in logs*
 
-Either make the spool directory writable by the process user, or set
-`spool_dir` in `[options]` to a writable path. In container environments
-where `/var/mail` does not exist, setting `spool_dir` to a path such as
-`/tmp/spool` avoids the automatic fallback entirely.
+Make the spool directory writable by the process user, set `spool_dir` in
+`[options]` to a writable path, or set `spool_enabled = false` when no
+on-disk archive is wanted. In container environments where `/var/mail` does
+not exist, setting `spool_dir` to a path such as `/tmp/spool` avoids the
+automatic fallback entirely. On read-only filesystems, `spool_enabled = false`
+removes the warning without requiring a writable path.
 
 #### *Binary fails to start with "GLIBC not found" error*
 

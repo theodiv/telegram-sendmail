@@ -32,6 +32,16 @@ chat_id = -1001234567890
 
 [options]
 
+; Archive every raw email to the spool file before Telegram delivery.
+; Set to false on read-only filesystems, ephemeral containers, or hosts
+; with a no-retention policy — no spool file, spool directory, or /tmp
+; fallback is created, spool_dir is ignored, and no spool WARNING is logged.
+; Telegram delivery is unaffected.
+; Accepted values: true, false, yes, no, 1, 0
+;
+; Default: true
+spool_enabled = true
+
 ; Directory used to archive every raw email before Telegram delivery.
 ; The current user's login name is appended automatically, giving a final
 ; path of <spool_dir>/<username> (e.g. /var/mail/root).
@@ -41,7 +51,7 @@ chat_id = -1001234567890
 ; This hidden subdirectory is created automatically with 0700 permissions
 ; so that only the owning user can read its contents.
 ; Set this to any path writable by the process user — useful in containers
-; where /var/mail does not exist.
+; where /var/mail does not exist. Ignored when spool_enabled = false.
 ;
 ; Default: /var/mail
 spool_dir = /var/mail
@@ -96,7 +106,8 @@ disable_notification = false
 [filters]
 
 ; Suppress known-noisy messages from being forwarded to Telegram.
-; Matched messages are still archived to the spool file for audit.
+; Matched messages are still archived to the spool file for audit unless
+; spool_enabled = false.
 ; Each key accepts one or more case-insensitive glob patterns (Python
 ; fnmatch semantics: *, ?, [seq], [!seq]). Place each pattern on its
 ; own line, indented under the key.
