@@ -62,6 +62,7 @@ Coverage targets
 `ConfigLoader.load`
     - Raises ConfigurationError when no config file is found on disk
     - Raises ConfigurationError when the config file exists but is not readable
+    - Raises ConfigurationError when the explicit path is missing or is a directory
     - Raises ConfigurationError when the [telegram] token key is absent
     - Raises ConfigurationError when the [telegram] chat_id key is absent
     - Returns a fully populated AppConfig for a minimal valid config file
@@ -69,7 +70,9 @@ Coverage targets
     - Populates suppress_subject and suppress_sender from [filters] section
     - Prefers the user config over the system config when both are present
     - Returns the system config when only the system config exists
+    - Loads an explicit path instead of the user config when both are present
     - Returns a frozen (immutable) AppConfig instance
+    - Resolves spool_path to an absolute path under the configured spool_dir
 
 Design notes
 ------------
@@ -83,6 +86,8 @@ Design notes
   option-parsing behavior from the surrounding file-discovery and path-resolution logic.
   A writable tmp_path subdirectory is always injected as spool_dir in these tests to
   prevent _resolve_spool_path from attempting to access /var/mail on the host.
+- The missing-explicit-path test writes a valid user config first, so a regression
+  that fell back to discovery would load it and return instead of raising.
 """
 
 from __future__ import annotations
@@ -685,8 +690,38 @@ class TestConfigLoaderLoad:
             with pytest.raises(ConfigurationError, match="cannot be read"):
                 ConfigLoader.load()
         finally:
-            # Restore so pytest can clean up tmp_path.
             user_ini.chmod(0o600)
+
+    @pytest.mark.skipif(os.getuid() == 0, reason="root bypasses file permissions")
+    def test_raises_config_error_for_unreadable_explicit_path(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
+    ):
+        staged_ini = tmp_path / "staged.ini"
+        staged_ini.write_text(_minimal_ini())
+        staged_ini.chmod(0o000)
+        try:
+            with pytest.raises(ConfigurationError, match="cannot be read"):
+                ConfigLoader.load(staged_ini)
+        finally:
+            staged_ini.chmod(0o600)
+
+    def test_missing_explicit_path_raises_without_fallback(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
+    ):
+        user_ini = patched_config_constants["user_ini"]
+        user_ini.write_text(_minimal_ini())
+        user_ini.chmod(0o600)
+        missing = tmp_path / "absent.ini"
+        with pytest.raises(ConfigurationError, match="not a regular file") as exc_info:
+            ConfigLoader.load(missing)
+        assert f"'{missing}'" in str(exc_info.value)
+
+    def test_directory_explicit_path_raises_config_error(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
+    ):
+        with pytest.raises(ConfigurationError, match="not a regular file") as exc_info:
+            ConfigLoader.load(tmp_path)
+        assert f"'{tmp_path}'" in str(exc_info.value)
 
     def test_raises_config_error_when_token_is_missing(
         self, patched_config_constants: dict[str, Path]
@@ -776,6 +811,17 @@ class TestConfigLoaderLoad:
         system_ini.write_text(_minimal_ini(token="sys-only-token"))
         system_ini.chmod(0o600)
         assert ConfigLoader.load().token == "sys-only-token"
+
+    def test_explicit_path_loaded_instead_of_user_config(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
+    ):
+        user_ini = patched_config_constants["user_ini"]
+        user_ini.write_text(_minimal_ini(token="user-token"))
+        user_ini.chmod(0o600)
+        staged_ini = tmp_path / "staged.ini"
+        staged_ini.write_text(_minimal_ini(token="staged-token"))
+        staged_ini.chmod(0o600)
+        assert ConfigLoader.load(staged_ini).token == "staged-token"
 
     def test_returned_app_config_is_frozen(
         self, patched_config_constants: dict[str, Path]

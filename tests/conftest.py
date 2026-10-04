@@ -7,7 +7,7 @@ Configuration
   `app_config`                 — valid `AppConfig` with a `tmp_path` spool file
   `app_config_no_retry`        — `app_config` with `max_retries=0`, `backoff_factor=0.0`
   `config_file_factory`        — callable that writes an INI file to `tmp_path`
-  `patched_config_loader`      — patches `ConfigLoader.load()`; `app_config` (no file I/O)
+  `patched_config_loader`      — patches `ConfigLoader.load()`; returns `app_config` (no file I/O)
 
 Email corpus
   `plain_raw_email`            — minimal plain-text RFC 2822 email string
@@ -21,6 +21,7 @@ Telegram API mocking
   `mock_telegram_api_error`    — `requests_mock`: POST `/sendMessage` -> 200 `ok: false`
   `mock_telegram_server_error` — `requests_mock`: POST `/sendMessage` -> 500
   `mock_telegram_rate_limit`   — `requests_mock`: POST `/sendMessage` -> 429
+  `send_telegram_url_pattern`  — session-scoped expected `sendMessage` URL for the test token
 
 SMTP
   `smtp_callback`              — `MagicMock` for use as `SMTPServer` `on_message` callback
@@ -43,7 +44,7 @@ Design notes
   `mocker.last_request` for assertion on the outbound payload.
 - All fixtures that write files use `tmp_path` (pytest-provided per-test
   temporary directory) to guarantee full isolation between tests.
- - `patched_config_loader` patches at the class level via `monkeypatch` so the
+- `patched_config_loader` patches at the class level via `monkeypatch` so the
   patch is automatically reverted after each test without any manual teardown.
 """
 
@@ -143,7 +144,8 @@ def patched_config_loader(
     top-level functions from attempting to resolve `/etc/telegram-sendmail.ini`
     or `~/.telegram-sendmail.ini` during tests. The patch is applied at
     the class level via `monkeypatch` and is automatically reverted when
-    the test finishes.
+    the test finishes. The replacement accepts and ignores the optional
+    `config_file` argument that `main()` forwards from `--config`.
 
     Returns `app_config` so tests can reference it directly without
     requesting both fixtures.
@@ -153,7 +155,7 @@ def patched_config_loader(
     monkeypatch.setattr(
         cfg_module.ConfigLoader,
         "load",
-        staticmethod(lambda: app_config),
+        staticmethod(lambda config_file=None: app_config),
     )
     return app_config
 

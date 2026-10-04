@@ -4,7 +4,8 @@ Configuration loading and validation for telegram-sendmail.
 Public surface
 --------------
 - `AppConfig`    — frozen dataclass holding all resolved configuration.
-- `ConfigLoader` — discovers, validates, and parses the config file.
+- `ConfigLoader` — validates and parses the config file from an explicit
+                   path or the default locations.
 
 All other symbols in this module are private implementation details.
 `config.py` is the only module in the package that imports `configparser`.
@@ -130,7 +131,7 @@ class _ParsedOptions:
 @dataclass(frozen=True)
 class _ParsedFilters:
     """
-    Validated `[filters]` glob patterns, ready to be merged into `AppConfig`.
+    Extracted `[filters]` glob patterns, ready to be merged into `AppConfig`.
 
     Attributes:
         suppress_subject: Case-insensitive glob patterns matched against
@@ -478,7 +479,7 @@ def _parse_filters(
     so that delivery is never blocked by a filter misconfiguration.
 
     Returns:
-        A `_ParsedFilters` instance containing the validated glob patterns.
+        A `_ParsedFilters` instance containing the extracted glob patterns.
     """
     if not parser.has_section("filters"):
         return _ParsedFilters(suppress_subject=(), suppress_sender=())
@@ -514,6 +515,7 @@ class ConfigLoader:
     Usage::
 
         config = ConfigLoader.load()
+        config = ConfigLoader.load(Path("/opt/staging/sendmail.ini"))
 
     The class exposes a single class method rather than instance methods
     because loading configuration is a stateless, idempotent operation.
@@ -521,16 +523,33 @@ class ConfigLoader:
     """
 
     @classmethod
-    def load(cls) -> AppConfig:
+    def load(cls, config_file: Path | None = None) -> AppConfig:
         """
         Locate the config file, validate its permissions, parse its contents,
         and return an immutable `AppConfig` instance.
 
+        An explicit `config_file` replaces discovery with no fallback to the
+        default locations, so a mistyped path raises instead of silently
+        loading a different file.
+
+        Args:
+            config_file: Operator-supplied path from `--config`, or `None`
+                         to search the default locations.
+
         Raises:
-            ConfigurationError: If no config file is found, the file cannot
-                                be read, or a required key is absent or empty.
+            ConfigurationError: If no config file is found, the explicit path
+                                is not a regular file, the file cannot be
+                                read, or a required key is absent or empty.
         """
-        config_file = _locate_config_file()
+        if config_file is None:
+            config_file = _locate_config_file()
+        elif not config_file.is_file():
+            # configparser silently skips paths it cannot open, so a directory
+            # would otherwise surface as a misleading missing-key error.
+            raise ConfigurationError(
+                f"Config file '{config_file}' is missing or not a regular file. "
+                "Pass the path to an existing INI file via --config."
+            )
 
         if not os.access(config_file, os.R_OK):
             raise ConfigurationError(
