@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `--config FILE` to load configuration from a custom path, with no
+  fallback to the default locations. ([#60](https://github.com/theodiv/telegram-sendmail/issues/60))
+
 ## [1.2.2] - 2026-03-30
 
 ### Fixed

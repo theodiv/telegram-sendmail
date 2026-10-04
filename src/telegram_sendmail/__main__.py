@@ -33,6 +33,7 @@ import logging
 import logging.handlers
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from telegram_sendmail import __version__
 from telegram_sendmail.client import _RETRY_STATUS_CODES, TelegramClient
@@ -354,6 +355,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Custom flags
     parser.add_argument(
+        "--config",
+        type=Path,
+        metavar="FILE",
+        help="load configuration from FILE instead of the default locations",
+    )
+    parser.add_argument(
         "--console",
         action="store_true",
         help="log to stderr instead of syslog (useful for debugging)",
@@ -403,6 +410,9 @@ def main() -> None:
     - **Interactive mode** (stdin is a TTY): prints usage information and
       exits with code `1`. This is not an error condition in the strict
       sense; it just means the tool was invoked directly from a terminal.
+
+    Configuration is loaded once before dispatch, so `--config` applies to
+    every mode without per-mode wiring.
     """
     arg_parser = _build_parser()
     args, unknown = arg_parser.parse_known_args()
@@ -422,7 +432,7 @@ def main() -> None:
     # Loading configuration must happen after logging is set up so that
     # permission warnings from ConfigLoader are captured.
     try:
-        config = ConfigLoader.load()
+        config = ConfigLoader.load(args.config)
     except ConfigurationError as exc:
         logger.error("Configuration error: %s", exc)
         sys.exit(_EX_CONFIG)

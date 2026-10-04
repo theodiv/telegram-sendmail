@@ -159,6 +159,11 @@ When both files exist, only the per-user file is read. If neither file
 exists, the process exits with code `78` (`EX_CONFIG`) and logs a
 descriptive error message.
 
+The `--config FILE` flag replaces both locations with an explicit path —
+per-service configs on one host, or a staged file validated with `--probe`
+before it goes live. There is no fallback: a missing, unreadable, or
+non-regular `FILE` exits with code `78` even when a default file exists.
+
 A minimal configuration requires only the `[telegram]` section with the
 `token` and `chat_id` keys:
 
@@ -388,6 +393,7 @@ mode.
 | `-bs`       | —         | Run in SMTP server mode                                     |
 | `-t`        | —         | Extract recipients from headers (accepted, ignored)         |
 | `-i`, `-oi` | —         | Do not treat lone `.` as end-of-message (accepted, ignored) |
+| `--config`  | `FILE`    | Load configuration from `FILE` instead of default locations |
 | `--probe`   | —         | Validate config and verify Telegram connectivity; no stdin  |
 | `--console` | —         | Log to stderr instead of syslog                             |
 | `--debug`   | —         | Set log level to DEBUG                                      |
@@ -591,6 +597,9 @@ telegram-sendmail --probe
 
 # Full post-install verification with verbose output
 telegram-sendmail --probe --console --debug
+
+# Deliver through a per-service config instead of the default locations
+echo "Backup finished." | telegram-sendmail --config /etc/telegram-sendmail/backup.ini
 ```
 
 ## Troubleshooting
@@ -622,6 +631,13 @@ Exit code `0` confirms end-to-end connectivity. `78` indicates a config
 error, `75` a transient network failure, and `1` a permanent API rejection.
 This flag is suitable for Ansible tasks, cloud-init `runcmd` assertions,
 and manual post-install smoke tests.
+
+Combine `--probe` with `--config` to validate a staged file before it
+replaces the live configuration:
+
+```bash
+telegram-sendmail --probe --config /etc/telegram-sendmail.staged.ini --console --debug
+```
 
 ### Common Issues
 

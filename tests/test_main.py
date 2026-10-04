@@ -74,7 +74,9 @@ Coverage targets
     - Output mentions "--help" to direct the operator to full documentation
 
 `main`
-    - Calls sys.exit(78) when ConfigLoader.load() raises ConfigurationError
+    - Calls sys.exit(78) when ConfigLoader.load() raises ConfigurationError or
+      --config names a missing file
+    - Loads the file passed via --config and sends the probe to its chat_id
     - Calls sys.exit(1) when sys.stdin.isatty() returns True (interactive guard)
     - Calls sys.exit(0) when pipe-mode delivery succeeds with non-TTY stdin
     - Invokes SMTPServer (via _run_smtp_mode) and calls sys.exit(0) when the -bs flag
@@ -83,7 +85,8 @@ Coverage targets
     - --probe takes dispatch priority over -bs if both are present
     - Calls sys.exit(75) when pipe-mode hits HTTP 429 rate limit
     - Installs a _TokenRedactFilter on every root-logger handler after config is loaded
-    - Logs ConfigurationError at ERROR level before exiting with code 78
+    - Logs ConfigurationError at ERROR level before exiting with code 78, naming
+      the --config path when one was given
 
 Design notes
 ------------
@@ -95,6 +98,12 @@ Design notes
   `TestMainDispatch` tests that need a successful config step; it patches
   `ConfigLoader.load` at the class level and is automatically reverted
   after each test.
+- The `--config` tests run the real `ConfigLoader` because
+  `patched_config_loader` ignores the path. Their INI pins `spool_dir` to
+  `tmp_path` so spool resolution never creates `/tmp/.telegram-sendmail-spool`.
+  The missing-file test activates `requests_mock` with no routes, so a
+  regression that fell back to a host config fails instead of reaching the
+  network.
 - `TestTokenRedactFilter` constructs `logging.LogRecord` instances directly
   rather than emitting through a live logger, because the test target is the
   filter's string replacement logic, not the logging infrastructure.
@@ -105,7 +114,9 @@ from __future__ import annotations
 import io
 import logging
 import sys
+from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, TextIO
 
 import pytest
@@ -1089,7 +1100,7 @@ class TestMainDispatch:
             return True
 
     @staticmethod
-    def _raise_config_error() -> AppConfig:
+    def _raise_config_error(config_file: Path | None = None) -> AppConfig:
         """Simulate config loading failure by raising ConfigurationError."""
         raise ConfigurationError("config file not found")
 
@@ -1109,6 +1120,53 @@ class TestMainDispatch:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == _EX_CONFIG
+
+    def test_config_flag_with_missing_file_exits_with_code_78(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        no_setup_logging: None,
+        requests_mock: requests_mock_module.Mocker,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ):
+        missing = tmp_path / "absent.ini"
+        monkeypatch.setattr(
+            sys, "argv", ["telegram-sendmail", "--config", str(missing), "--probe"]
+        )
+        monkeypatch.setattr(sys, "stdin", self._FakeTTY())
+        with caplog.at_level(logging.ERROR, logger="telegram_sendmail.__main__"):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == _EX_CONFIG
+        assert any(f"'{missing}'" in r.getMessage() for r in caplog.records)
+
+    def test_config_flag_loads_given_file_in_probe_mode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        no_setup_logging: None,
+        config_file_factory: Callable[[str], Path],
+        mock_telegram_ok: requests_mock_module.Mocker,
+        app_config: AppConfig,
+        tmp_path: Path,
+    ):
+        config_file = config_file_factory(
+            f"""
+            [telegram]
+            token = {app_config.token}
+            chat_id = -100555
+
+            [options]
+            spool_dir = {tmp_path}
+            """
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["telegram-sendmail", "--config", str(config_file), "--probe"]
+        )
+        monkeypatch.setattr(sys, "stdin", self._FakeTTY())
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == _EX_OK
+        assert mock_telegram_ok.last_request.json()["chat_id"] == "-100555"
 
     def test_tty_stdin_exits_with_code_1(
         self,
