@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `--config FILE` to load configuration from a custom path, with no
   fallback to the default locations. ([#60](https://github.com/theodiv/telegram-sendmail/issues/60))
+- Add `spool_enabled` to `[options]` to disable mail spooling, with no spool
+  file, spool directory, or `/tmp` fallback created. ([#61](https://github.com/theodiv/telegram-sendmail/issues/61))
 
 ## [1.2.2] - 2026-03-30
 
