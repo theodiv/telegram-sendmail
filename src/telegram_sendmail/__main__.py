@@ -83,7 +83,7 @@ def _deliver(
     Run the full email delivery pipeline for a single message.
 
     Pipeline order:
-    1. **Spool**  — archive the raw email unless `spool_enabled = false`.
+    1. **Spool**  — archive the raw email unless spooling is disabled.
                     Non-fatal: a `SpoolError` is logged at WARNING level
                     and delivery continues.
     2. **Parse**  — decode MIME structure and convert body to Telegram markup.

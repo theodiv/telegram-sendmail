@@ -76,7 +76,7 @@ class ParsingError(TelegramSendmailError):
 class SpoolError(TelegramSendmailError):
     """
     Raised when the mail spooler cannot write to either the configured
-    spool directory or the `/tmp/.telegram-sendmail-spool` fallback.
+    spool directory or the per-user fallback under `/tmp`.
 
     This is intentionally non-fatal for the Telegram delivery path: a
     `SpoolError` is logged at `WARNING` level and the message is

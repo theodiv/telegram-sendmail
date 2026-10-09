@@ -32,7 +32,7 @@ Coverage targets
 
 `MailSpooler.write` — disabled spooling
     - Creates no file or directory when the spool path is None
-    - Logs a DEBUG message containing "spool_enabled=false" when the spool path is None
+    - Logs a DEBUG message containing "spool_path=None" when the spool path is None
 
 Design notes
 ------------
@@ -358,6 +358,6 @@ class TestMailSpoolerDisabled:
         with caplog.at_level(logging.DEBUG, logger="telegram_sendmail.spool"):
             _make_spooler(app_config, None).write("email body")
         assert any(
-            r.levelname == "DEBUG" and "spool_enabled=false" in r.message
+            r.levelname == "DEBUG" and "spool_path=None" in r.message
             for r in caplog.records
         )

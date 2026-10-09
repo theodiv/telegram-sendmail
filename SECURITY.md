@@ -23,9 +23,12 @@ considered in-scope security concerns:
   command-injection vulnerability reachable via the MIME or SMTP parsing
   pipeline would be in-scope.
 - **TOCTOU races** — the spool file is written to directories that may be
-  world-writable (`/tmp`). Spool files are protected against symlink attacks
-  and unauthorized access regardless of directory permissions. Any regression
-  in this area is a security issue.
+  world-writable (`/tmp`). The `/tmp` fallback is a per-user directory that
+  is created with `0700` permissions or refused: an existing entry that is a
+  symlink, belongs to another user, or is accessible to group or others
+  disables spooling instead of being repaired. The spool file is opened
+  without following symlinks and forced to `0600` on the open descriptor.
+  Any regression in this area is a security issue.
 - **HTML injection into Telegram** — malicious content in an email that
   bypasses the two-pass HTML sanitiser and injects unintended Telegram markup
   is considered a security defect.
@@ -81,7 +84,9 @@ The following deployment practices are recommended for operators running
    chown root:root /etc/telegram-sendmail.ini
    ```
 - **Spool directory**: prefer a dedicated, non-world-writable spool directory
-  over the `/tmp` fallback. Set `spool_dir` in `[options]` accordingly.
+  over the `/tmp` fallback. Set `spool_dir` in `[options]` accordingly. Any
+  local user can occupy the fallback name in `/tmp` first, which disables
+  spooling with a `WARNING` until the entry is removed.
 - **Bot token scope**: create a dedicated bot for each host or environment.
   A compromised token can be revoked via @BotFather without affecting other
   deployments.

@@ -101,7 +101,7 @@ Design notes
   after each test.
 - The `--config` tests run the real `ConfigLoader` because
   `patched_config_loader` ignores the path. Their INI pins `spool_dir` to
-  `tmp_path` so spool resolution never creates `/tmp/.telegram-sendmail-spool`.
+  `tmp_path` so spool resolution never creates a fallback directory under `/tmp`.
   The missing-file test activates `requests_mock` with no routes, so a
   regression that fell back to a host config fails instead of reaching the
   network.

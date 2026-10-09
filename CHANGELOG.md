@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Refuse a `/tmp` spool fallback directory that is a symlink, owned by
+  another user, or accessible to group or others, and give each user a
+  separate one (`/tmp/.telegram-sendmail-spool-<uid>`). Previously, such a
+  directory was still used after a `WARNING`; spooling is now disabled for
+  the run instead.
+
 ## [1.3.0] - 2026-10-04
 
 ### Added
