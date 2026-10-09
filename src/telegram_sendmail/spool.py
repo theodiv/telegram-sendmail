@@ -45,10 +45,11 @@ class MailSpooler:
     against the path, which would be vulnerable to a TOCTOU race on
     systems where the spool directory is world-writable.
 
-    A `None` spool path means the operator disabled spooling with
-    `spool_enabled = false`. Handling that state here rather than in the
-    delivery pipeline keeps every `None` check on the spool path inside the
-    one module that consumes it.
+    A `None` spool path means spooling is off: the operator disabled it
+    with `spool_enabled = false`, or no trusted `/tmp` fallback directory
+    was available when the configuration loaded. Handling that state here
+    rather than in the delivery pipeline keeps every `None` check on the
+    spool path inside the one module that consumes it.
 
     Usage::
 
@@ -67,8 +68,8 @@ class MailSpooler:
         does not exist. When the directory is newly created it receives
         `0700` permissions so that only the owning user can read its
         contents, which is a necessary precaution when the spool path sits
-        inside a world-writable directory such as the fallback
-        `/tmp/.telegram-sendmail-spool`.
+        inside a world-writable directory such as `/tmp`, where the
+        per-user fallback lives.
 
         The file is opened with `O_NOFOLLOW`; if the path is a symlink the
         kernel raises `OSError(ELOOP)`, which is caught and re-raised as
@@ -88,17 +89,17 @@ class MailSpooler:
                         WARNING level and continue processing.
         """
         if self._spool_path is None:
-            logger.debug("Spool write skipped (spool_enabled=false)")
+            logger.debug("Spool write skipped (spool_path=None)")
             return
 
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S %z")
         separator = f"\n{_SEPARATOR}\n{timestamp}\n{_SEPARATOR}\n"
 
         try:
-            # mode=0o700 applies only when the directory is newly created;
-            # existing directories are not retroactively chmod'd here because
-            # config.py already enforced permissions on the fallback path at
-            # startup.
+            # mode=0o700 applies only when the directory is newly created.
+            # An existing directory is left as found: a configured spool
+            # directory belongs to the operator, and the fallback was vetted
+            # when the configuration loaded.
             self._spool_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
             _flags = os.O_CREAT | os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW

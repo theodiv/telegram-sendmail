@@ -214,9 +214,11 @@ All keys in this section are optional. Absent keys use the documented default.
 The `spool_dir` value has the current user's login name appended
 automatically, producing a final path of `<spool_dir>/<username>`
 (e.g. `/var/mail/root`). If the resolved directory is not writable at
-runtime, the tool falls back to `/tmp/.telegram-sendmail-spool/<username>`
-and logs a `WARNING`. This hidden subdirectory is created automatically with
-`0700` permissions so that only the owning user can read its contents.
+runtime, the tool falls back to
+`/tmp/.telegram-sendmail-spool-<uid>/<username>` and logs a `WARNING`. This
+hidden per-user directory is created automatically with `0700` permissions
+so that only the owning user can read its contents. A fallback that cannot
+be trusted disables spooling instead; see [Mail Spooling](#mail-spooling).
 
 Setting `spool_enabled = false` disables mail spooling entirely: no spool
 file, spool directory, or `/tmp` fallback is created, `spool_dir` is ignored,
@@ -433,7 +435,7 @@ implemented in `_deliver()`:
    preserved on disk regardless of whether downstream stages succeed or
    fail. A `SpoolError` is non-fatal: a spool failure is logged at
    `WARNING` level and delivery continues. The stage is skipped when
-   `spool_enabled = false`.
+   `spool_enabled = false` or when the `/tmp` fallback cannot be trusted.
 
 2. **Parse** — The raw RFC 2822 email string is decoded from its MIME
    structure. The body is extracted (preferring `text/plain`, falling back
@@ -472,18 +474,21 @@ message is appended with a timestamped separator in mbox-style format,
 suitable for human inspection.
 
 When the configured `spool_dir` (default: `/var/mail`) is not writable, the
-spooler falls back to `/tmp/.telegram-sendmail-spool/<username>`. This
-fallback directory is created on demand with `0700` permissions (owner-only
-access), and its ownership is validated against the current UID. If the
-directory already exists but is owned by a different user — a sign of a
-pre-creation attack — a `WARNING` is emitted and the untrusted path is not
-used.
+spooler falls back to `/tmp/.telegram-sendmail-spool-<uid>/<username>`,
+where `<uid>` is the numeric ID of the process user, so every user gets a
+separate fallback directory. The directory is created with `0700`
+permissions (owner-only access). If an entry with that name already exists,
+it is used only when it is a real directory, owned by the process user, and
+closed to group and others. A symlink, a directory owned by another user, or
+one with looser permissions is never repaired: a `WARNING` names the reason
+and spooling is disabled for that run, while the message is still forwarded
+to Telegram.
 
 File permissions on the spool file are enforced to `0600` via `os.fchmod`
 against the open file descriptor on every write. Using `os.fchmod` on the
 fd rather than `os.chmod` on the path eliminates the TOCTOU race condition
 that would otherwise exist when the spool directory is world-writable
-(e.g. the `/tmp` fallback).
+(e.g. a `spool_dir` under `/tmp`).
 
 The spool file is opened with the `O_NOFOLLOW` flag. If the spool path is a
 symlink, the kernel raises `ELOOP` rather than following the link, preventing
@@ -570,6 +575,12 @@ reason for looser permissions.
 `os.fchmod` against the open file descriptor rather than `os.chmod` against
 the path. The `O_NOFOLLOW` flag prevents symlink redirection attacks. These
 measures are described in detail in the [Mail Spooling](#mail-spooling) section.
+
+**Fallback Directory Vetting**: The per-user `/tmp` fallback directory is
+created with `0700` permissions or, when the name is already taken, inspected
+without following symlinks. Anything other than a real directory owned by
+the process user and closed to group and others is refused, never repaired,
+and spooling is disabled for that run.
 
 For the full threat model, hardening recommendations, and vulnerability
 reporting process, see the [Security Policy](../SECURITY.md).
@@ -709,6 +720,17 @@ on-disk archive is wanted. In container environments where `/var/mail` does
 not exist, setting `spool_dir` to a path such as `/tmp/spool` avoids the
 automatic fallback entirely. On read-only filesystems, `spool_enabled = false`
 removes the warning without requiring a writable path.
+
+#### *Fallback spool directory is not trusted*
+
+The `WARNING` names the reason: the entry at
+`/tmp/.telegram-sendmail-spool-<uid>` is a symlink, is not a directory,
+belongs to another user, or is accessible to group or others. Spooling stays
+disabled until the entry is gone. Inspect it with `ls -ld`, remove it if it
+is not expected, and prefer a dedicated `spool_dir` writable only by the
+process user, which avoids the shared `/tmp` namespace entirely. `--probe`
+reports the same warning, so the fix can be verified without waiting for the
+next email.
 
 #### *Binary fails to start with "GLIBC not found" error*
 

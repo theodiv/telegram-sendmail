@@ -26,10 +26,15 @@ Coverage targets
 `_resolve_spool_path`
     - Returns <dir>/<username> when the configured directory is writable
     - Uses _DEFAULT_SPOOL_DIR when raw_dir is None
-    - Returns <_FALLBACK_SPOOL_BASE>/<username> when the configured directory is not writable
+    - Returns <_FALLBACK_SPOOL_BASE>-<euid>/<username> when the directory is missing or not writable
     - Creates the fallback directory with exactly 0700 permissions on first use
+    - Reuses an existing 0700 fallback directory owned by the effective UID and keeps its content
     - Emits a WARNING containing "not writable" when falling back
-    - Emits a WARNING when the fallback directory is owned by a different UID
+    - Returns None and names the owner in a WARNING when another UID owns the fallback directory
+    - Returns None for a symlinked fallback and leaves the link target's permissions unchanged
+    - Returns None for a group- or world-accessible fallback and leaves its permissions unrepaired
+    - Returns None when the fallback path is not a directory and leaves the entry in place
+    - Returns None with a WARNING and creates no parents when the fallback cannot be created
 
 `_require`
     - Returns the value stripped of leading/trailing whitespace when the key is present
@@ -51,8 +56,8 @@ Coverage targets
     - Uses the configured spool_dir as the parent of the resolved spool path
     - Falls back to the default and warns when spool_enabled is not a valid boolean
     - Resolves spool_path when spool_enabled is true
-    - Returns spool_path None when spool_enabled is false
-    - Does not create the fallback directory or emit a WARNING when spool_enabled is false
+    - Returns spool_path None when spool_enabled is false or the fallback cannot be trusted
+    - Creates nothing on disk and emits no WARNING when spool_enabled is false
 
 `_parse_filters`
     - Returns empty tuples when the [filters] section is absent or has no keys
@@ -78,12 +83,24 @@ Coverage targets
     - Returns a frozen (immutable) AppConfig instance
     - Resolves spool_path to an absolute path under the configured spool_dir
     - Returns spool_path None and creates no fallback directory when spool_enabled is false
+    - Returns spool_path None when the fallback directory cannot be trusted
 
 Design notes
 ------------
 - All module-level path constants (_USER_CONFIG, _SYSTEM_CONFIG, _DEFAULT_SPOOL_DIR,
   _FALLBACK_SPOOL_BASE) are redirected into tmp_path via the `patched_config_constants`
   module-level fixture, guaranteeing zero interaction with the real host filesystem.
+- `_fallback_dir` repeats the production naming rule (<base>-<euid>) on purpose: the
+  expected directory is stated by the tests, not read back from the code under test.
+- Fallback-trust tests trigger the fallback with a missing spool_dir, which fails the
+  writability check even as root, so none of them needs a UID 0 skip.
+- A directory owned by another user cannot be created without root, so the ownership
+  test patches `os.geteuid` instead: the process then runs as a UID that does not own
+  the directory waiting under its name. It also asserts that nothing appears under the
+  real UID's name, which pins that naming follows the effective UID.
+- Refusal tests assert the returned None together with the state of the refused entry
+  (permission bits, content, symlink target) rather than asserting that no chmod ran.
+  The unchanged symlink target is what separates lstat from link-following calls.
 - Tests that depend on filesystem permission enforcement (chmod 0o000, 0o555, 0o640)
   are decorated with @pytest.mark.skipif(os.getuid() == 0, ...) because root bypasses
   DAC permission checks on Linux and these tests would give false positives.
@@ -95,7 +112,7 @@ Design notes
   instead. A missing directory fails the writability check even as root, so a
   regression that still resolved the path would hit the fallback branch and be
   caught without a UID 0 skip; `_FALLBACK_SPOOL_BASE` is redirected into tmp_path
-  so that regression cannot create `/tmp/.telegram-sendmail-spool`.
+  so that regression cannot create a directory under `/tmp`.
 - The missing-explicit-path test writes a valid user config first, so a regression
   that fell back to discovery would load it and return instead of raising.
 """
@@ -156,6 +173,11 @@ def _minimal_ini(token: str = "tok", chat_id: str = "-123") -> str:
     return f"[telegram]\ntoken = {token}\nchat_id = {chat_id}\n"
 
 
+def _fallback_dir(base: Path) -> Path:
+    """Return the per-user fallback directory that resolution derives from `base`."""
+    return Path(f"{base}-{os.geteuid()}")
+
+
 @pytest.fixture
 def patched_config_constants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -165,16 +187,17 @@ def patched_config_constants(
     system_ini = tmp_path / "system.ini"
     spool_dir = tmp_path / "spool"
     spool_dir.mkdir()
-    fallback_dir = tmp_path / "fallback"
+    fallback_base = tmp_path / "fallback"
     monkeypatch.setattr(cfg_module, "_USER_CONFIG", user_ini)
     monkeypatch.setattr(cfg_module, "_SYSTEM_CONFIG", system_ini)
     monkeypatch.setattr(cfg_module, "_DEFAULT_SPOOL_DIR", spool_dir)
-    monkeypatch.setattr(cfg_module, "_FALLBACK_SPOOL_BASE", fallback_dir)
+    monkeypatch.setattr(cfg_module, "_FALLBACK_SPOOL_BASE", fallback_base)
     return {
         "user_ini": user_ini,
         "system_ini": system_ini,
         "spool_dir": spool_dir,
-        "fallback_dir": fallback_dir,
+        "fallback_base": fallback_base,
+        "fallback_dir": _fallback_dir(fallback_base),
     }
 
 
@@ -367,7 +390,7 @@ class TestResolveSpoolPath:
         assert _resolve_spool_path(None) == default_spool / getpass.getuser()
 
     @pytest.mark.skipif(os.getuid() == 0, reason="root bypasses file permissions")
-    def test_nonwritable_dir_falls_back_to_fallback_base(
+    def test_nonwritable_dir_falls_back_to_per_user_fallback_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         locked = tmp_path / "locked"
@@ -379,23 +402,34 @@ class TestResolveSpoolPath:
             result = _resolve_spool_path(str(locked))
         finally:
             locked.chmod(0o755)
-        assert result == fallback / getpass.getuser()
+        assert result == _fallback_dir(fallback) / getpass.getuser()
 
-    @pytest.mark.skipif(os.getuid() == 0, reason="root bypasses file permissions")
-    def test_fallback_dir_created_with_0700_permissions(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_missing_dir_falls_back_to_per_user_fallback_dir(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
     ):
-        locked = tmp_path / "locked2"
-        locked.mkdir()
-        locked.chmod(0o555)
-        fallback = tmp_path / "fallback2"
-        monkeypatch.setattr(cfg_module, "_FALLBACK_SPOOL_BASE", fallback)
-        try:
-            _resolve_spool_path(str(locked))
-        finally:
-            locked.chmod(0o755)
-        assert fallback.is_dir()
-        assert stat.S_IMODE(fallback.stat().st_mode) == 0o700
+        fallback_dir = patched_config_constants["fallback_dir"]
+        result = _resolve_spool_path(str(tmp_path / "missing"))
+        assert result == fallback_dir / getpass.getuser()
+
+    def test_fallback_dir_created_with_0700_permissions(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
+    ):
+        fallback_dir = patched_config_constants["fallback_dir"]
+        _resolve_spool_path(str(tmp_path / "missing"))
+        assert fallback_dir.is_dir()
+        assert stat.S_IMODE(fallback_dir.stat().st_mode) == 0o700
+
+    def test_existing_trusted_fallback_dir_is_reused(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
+    ):
+        fallback_dir = patched_config_constants["fallback_dir"]
+        fallback_dir.mkdir()
+        fallback_dir.chmod(0o700)
+        earlier_spool = fallback_dir / "earlier"
+        earlier_spool.write_text("archived")
+        result = _resolve_spool_path(str(tmp_path / "missing"))
+        assert result == fallback_dir / getpass.getuser()
+        assert earlier_spool.read_text() == "archived"
 
     @pytest.mark.skipif(os.getuid() == 0, reason="root bypasses file permissions")
     def test_warning_emitted_on_fallback(
@@ -415,29 +449,84 @@ class TestResolveSpoolPath:
                 locked.chmod(0o755)
         assert any("not writable" in r.message for r in caplog.records)
 
-    @pytest.mark.skipif(os.getuid() == 0, reason="root bypasses file permissions")
-    def test_fallback_directory_owned_by_different_uid_emits_warning(
+    def test_fallback_owned_by_another_uid_returns_none(
+        self,
+        patched_config_constants: dict[str, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        owner_uid = os.geteuid()
+        process_uid = owner_uid + 1
+        fallback_base = patched_config_constants["fallback_base"]
+        claimed_dir = Path(f"{fallback_base}-{process_uid}")
+        claimed_dir.mkdir()
+        claimed_dir.chmod(0o700)
+        monkeypatch.setattr(cfg_module.os, "geteuid", lambda: process_uid)
+        with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
+            result = _resolve_spool_path(str(tmp_path / "missing"))
+        assert result is None
+        assert not patched_config_constants["fallback_dir"].exists()
+        assert any(f"owned by uid {owner_uid}" in r.message for r in caplog.records)
+
+    def test_symlinked_fallback_returns_none_and_leaves_target_unchanged(
+        self,
+        patched_config_constants: dict[str, Path],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        target = tmp_path / "link_target"
+        target.mkdir()
+        target.chmod(0o755)
+        patched_config_constants["fallback_dir"].symlink_to(
+            target, target_is_directory=True
+        )
+        with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
+            result = _resolve_spool_path(str(tmp_path / "missing"))
+        assert result is None
+        assert stat.S_IMODE(target.stat().st_mode) == 0o755
+        assert any("symbolic link" in r.message for r in caplog.records)
+
+    @pytest.mark.parametrize("loose_mode", [0o750, 0o705], ids=["group", "other"])
+    def test_group_or_world_accessible_fallback_returns_none_unrepaired(
+        self,
+        patched_config_constants: dict[str, Path],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        loose_mode: int,
+    ):
+        fallback_dir = patched_config_constants["fallback_dir"]
+        fallback_dir.mkdir()
+        fallback_dir.chmod(loose_mode)
+        with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
+            result = _resolve_spool_path(str(tmp_path / "missing"))
+        assert result is None
+        assert stat.S_IMODE(fallback_dir.stat().st_mode) == loose_mode
+        assert any(f"mode {loose_mode:04o}" in r.message for r in caplog.records)
+
+    def test_non_directory_fallback_returns_none_and_stays_in_place(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
+    ):
+        fallback_dir = patched_config_constants["fallback_dir"]
+        fallback_dir.write_text("not a directory")
+        assert _resolve_spool_path(str(tmp_path / "missing")) is None
+        assert fallback_dir.read_text() == "not a directory"
+
+    def test_uncreatable_fallback_returns_none_without_creating_parents(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ):
-        # Make the primary spool dir non-writable so the fallback path is taken.
-        locked = tmp_path / "locked_uid"
-        locked.mkdir()
-        locked.chmod(0o555)
-        fallback = tmp_path / "fallback_uid"
-        monkeypatch.setattr(cfg_module, "_FALLBACK_SPOOL_BASE", fallback)
-        # Patch os.getuid() in the config module to simulate a uid mismatch:
-        # the directory is created and owned by the real uid, but getuid()
-        # returns a different value, triggering the ownership check.
-        monkeypatch.setattr(cfg_module.os, "getuid", lambda: 99999)
+        absent_parent = tmp_path / "absent_parent"
+        monkeypatch.setattr(
+            cfg_module, "_FALLBACK_SPOOL_BASE", absent_parent / "fallback"
+        )
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
-            try:
-                _resolve_spool_path(str(locked))
-            finally:
-                locked.chmod(0o755)
-        assert any("uid" in r.message for r in caplog.records)
+            result = _resolve_spool_path(str(tmp_path / "missing"))
+        assert result is None
+        assert not absent_parent.exists()
+        assert any("Could not prepare" in r.message for r in caplog.records)
 
 
 # --------------------------------------------------------------------------
@@ -641,15 +730,24 @@ class TestParseOptions:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ):
-        fallback = tmp_path / "fallback"
-        monkeypatch.setattr(cfg_module, "_FALLBACK_SPOOL_BASE", fallback)
+        monkeypatch.setattr(cfg_module, "_FALLBACK_SPOOL_BASE", tmp_path / "fallback")
         parser = _parser_with(
             spool_enabled="false", spool_dir=str(tmp_path / "missing")
         )
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
             _parse_options(parser, tmp_path / "test.ini")
-        assert not fallback.exists()
+        assert not any(tmp_path.iterdir())
         assert not caplog.records
+
+    def test_untrusted_fallback_returns_none_spool_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        fallback = tmp_path / "fallback"
+        monkeypatch.setattr(cfg_module, "_FALLBACK_SPOOL_BASE", fallback)
+        _fallback_dir(fallback).write_text("not a directory")
+        parser = _parser_with(spool_dir=str(tmp_path / "missing"))
+        result = _parse_options(parser, tmp_path / "test.ini")
+        assert result.spool_path is None
 
 
 # --------------------------------------------------------------------------
@@ -915,3 +1013,19 @@ class TestConfigLoaderLoad:
         config = ConfigLoader.load()
         assert config.spool_path is None
         assert not patched_config_constants["fallback_dir"].exists()
+
+    def test_untrusted_fallback_yields_no_spool_path(
+        self, patched_config_constants: dict[str, Path], tmp_path: Path
+    ):
+        user_ini = patched_config_constants["user_ini"]
+        user_ini.write_text(
+            "[telegram]\ntoken = t\nchat_id = -1\n"
+            f"[options]\nspool_dir = {tmp_path / 'missing'}\n"
+        )
+        user_ini.chmod(0o600)
+        target = tmp_path / "link_target"
+        target.mkdir()
+        patched_config_constants["fallback_dir"].symlink_to(
+            target, target_is_directory=True
+        )
+        assert ConfigLoader.load().spool_path is None

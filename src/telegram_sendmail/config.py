@@ -14,7 +14,7 @@ how or where configuration is stored.
 """
 
 import configparser
-import errno
+import contextlib
 import getpass
 import logging
 import os
@@ -77,8 +77,9 @@ class AppConfig:
         disable_notification: Whether to suppress Telegram push notifications.
         spool_path:           Fully resolved path to the per-user spool file,
                               guaranteed to be writable at construction time,
-                              or `None` when `spool_enabled = false` disables
-                              mail spooling.
+                              or `None` when mail spooling is off: disabled
+                              with `spool_enabled = false`, or left without
+                              a trusted `/tmp` fallback directory.
         max_retries:          Number of retry attempts for failed Telegram API
                               requests before raising `TelegramAPIError`.
         backoff_factor:       Multiplier applied between retry attempts by
@@ -259,35 +260,92 @@ def _validate_range_float(
     return default
 
 
-def _resolve_spool_path(raw_dir: str | None) -> Path:
+def _prepare_fallback_dir(fallback_dir: Path) -> bool:
+    """
+    Create the fallback spool directory or vet the entry already there.
+
+    The directory sits in world-writable `/tmp`, where any local user can
+    claim the expected name first. An entry is therefore trusted only when
+    `lstat`, which never follows a symlink, reports a real directory owned
+    by the effective UID with no group or other permission bits. The
+    sticky bit on `/tmp` keeps such an entry from being swapped afterwards:
+    only its owner or root can rename or remove it.
+
+    Nothing is repaired. An entry this process did not create may already
+    hold planted content, so tightening its permissions would prove
+    nothing. A refusal is logged at WARNING level with its reason.
+
+    Returns:
+        `True` when the directory can hold the spool file.
+    """
+    try:
+        # An entry already at the path is not adopted here; it goes through
+        # the same vetting below as a directory created just now.
+        with contextlib.suppress(FileExistsError):
+            fallback_dir.mkdir(mode=0o700)
+        dir_stat = fallback_dir.lstat()
+    except OSError as exc:
+        logger.warning(
+            "Could not prepare fallback spool directory '%s': %s — "
+            "mail spooling is disabled for this run",
+            fallback_dir,
+            exc,
+        )
+        return False
+
+    mode = stat.S_IMODE(dir_stat.st_mode)
+    reason: str | None = None
+    if stat.S_ISLNK(dir_stat.st_mode):
+        reason = "symbolic link"
+    elif not stat.S_ISDIR(dir_stat.st_mode):
+        reason = "not a directory"
+    elif dir_stat.st_uid != os.geteuid():
+        reason = f"owned by uid {dir_stat.st_uid}"
+    elif mode & (stat.S_IRWXG | stat.S_IRWXO):
+        reason = f"mode {mode:04o} grants group or other access"
+
+    if reason is not None:
+        logger.warning(
+            "Fallback spool directory '%s' is not trusted (%s); "
+            "mail spooling is disabled for this run",
+            fallback_dir,
+            reason,
+        )
+        return False
+
+    return True
+
+
+def _resolve_spool_path(raw_dir: str | None) -> Path | None:
     """
     Resolve the per-user spool file path from the configured directory.
 
     Resolution order:
-    1. Use `raw_dir` if provided and its parent directory is writable.
+    1. Use `raw_dir` if provided and writable.
     2. Use `_DEFAULT_SPOOL_DIR` (/var/mail) if `raw_dir` is absent.
-    3. Fall back to `_FALLBACK_SPOOL_BASE/<username>`
-       (/tmp/.telegram-sendmail-spool/<username>) with a WARNING if the
-       resolved directory is not writable. The hidden subdirectory is
-       created on demand with `0700` permissions (owner-only) to prevent
-       other users on the same host from reading mail content spooled into
-       the world-writable `/tmp` root. Its ownership is validated after
-       creation: if the directory is not owned by the current UID — a sign
-       of a pre-creation attack — an `OSError` is raised inside the
-       existing `try` block and a `WARNING` is emitted instead of using
-       the untrusted path.
+    3. Fall back to `<_FALLBACK_SPOOL_BASE>-<uid>/<username>`
+       (/tmp/.telegram-sendmail-spool-<uid>/<username>) with a WARNING if
+       the resolved directory is not writable. The effective UID is part
+       of the directory name because a single shared directory would
+       belong to whichever user fell back first and lock out every other
+       one. `_prepare_fallback_dir` decides whether the directory can be
+       used.
 
     The current user's login name is always appended as the filename so
     that the spool path follows the standard Unix convention of
     `/var/mail/<username>`.
+
+    Resolution runs while the configuration loads, not on first write, so
+    that `--probe` also reports a spool location that cannot be used.
 
     Args:
         raw_dir: The raw string value from the `[options]` section, or
                  `None` if the key was not present in the config file.
 
     Returns:
-        A `Path` pointing to the per-user spool file inside a writable
-        directory.
+        The per-user spool file path inside a writable directory, or
+        `None` when no trusted fallback directory is available, which
+        disables spooling for this run.
     """
     username: str = getpass.getuser()
 
@@ -300,34 +358,15 @@ def _resolve_spool_path(raw_dir: str | None) -> Path:
     if os.access(target_dir, os.W_OK):
         return candidate
 
+    fallback_dir: Path = Path(f"{_FALLBACK_SPOOL_BASE}-{os.geteuid()}")
     logger.warning(
         "Spool directory '%s' is not writable; falling back to '%s'",
         target_dir,
-        _FALLBACK_SPOOL_BASE,
+        fallback_dir,
     )
 
-    fallback_dir: Path = _FALLBACK_SPOOL_BASE
-    try:
-        # mkdir is atomic with respect to the directory name and safe to
-        # call repeatedly with exist_ok=True.
-        fallback_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # Re-enforce permissions in case the directory already existed with
-        # looser permissions from a previous installation.
-        fallback_dir.chmod(0o700)
-        dir_stat = fallback_dir.stat()
-        if dir_stat.st_uid != os.getuid():
-            raise OSError(
-                errno.EPERM,
-                f"fallback directory uid {dir_stat.st_uid} != effective uid "
-                f"{os.getuid()}",
-                str(fallback_dir),
-            )
-    except OSError as exc:
-        logger.warning(
-            "Could not create fallback spool directory '%s': %s",
-            fallback_dir,
-            exc,
-        )
+    if not _prepare_fallback_dir(fallback_dir):
+        return None
 
     return fallback_dir / username
 
