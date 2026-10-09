@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-09
+
 ### Security
 
 - Refuse a `/tmp` spool fallback directory that is a symlink, owned by
@@ -164,7 +166,8 @@ Production release.
 | `75` | Transient failure — retriable error; daemon should retry.     |
 | `78` | Configuration error (missing file or missing required key).   |
 
-[Unreleased]: https://github.com/theodiv/telegram-sendmail/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/theodiv/telegram-sendmail/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/theodiv/telegram-sendmail/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/theodiv/telegram-sendmail/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/theodiv/telegram-sendmail/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/theodiv/telegram-sendmail/compare/v1.2.0...v1.2.1
