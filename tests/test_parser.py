@@ -21,12 +21,14 @@ Coverage targets
 `_sanitise_subject`
     - Collapses leading, trailing, and internal whitespace sequences to a single space
     - Handles RFC 2822 folded Subject headers with embedded newlines and indentation
+    - Collapses line breaks in a subject override to single spaces
 
 `EmailParser.parse`
     - Raises ParsingError on whitespace-only or empty input
     - Extracts From and Subject headers into ParsedEmail fields correctly
     - Populates body with plain-text content from the email
-    - Applies sender_override to supersede the From header
+    - Applies sender_override and subject_override to supersede the From and Subject headers
+    - Keeps the Subject header when subject_override is empty
     - Sets has_attachments=True for multipart/mixed emails containing a binary attachment
     - Sets has_attachments=False for plain single-part emails
     - Logs attachment count at INFO level when attachments are detected
@@ -334,6 +336,14 @@ class TestSanitiseSubject:
         assert parsed.subject == parsed.subject.strip()
         assert len(parsed.subject) > 0
 
+    def test_override_line_breaks_collapse_to_single_space(
+        self, plain_raw_email: str, app_config: AppConfig
+    ):
+        parsed = EmailParser(app_config).parse(
+            plain_raw_email, subject_override="Alert\r\nX-Injected: 1\n\nbody"
+        )
+        assert parsed.subject == "Alert X-Injected: 1 body"
+
 
 # --------------------------------------------------------------------------
 # EmailParser.parse — MIME extraction and header handling
@@ -367,6 +377,20 @@ class TestEmailParserParse:
         )
         assert parsed.sender == "override@example.com"
         assert "cron@hostname.local" not in parsed.sender
+
+    def test_subject_override_supersedes_subject_header(
+        self, plain_raw_email: str, app_config: AppConfig
+    ):
+        parsed = EmailParser(app_config).parse(
+            plain_raw_email, subject_override="Disk Alert"
+        )
+        assert parsed.subject == "Disk Alert"
+
+    def test_empty_subject_override_keeps_subject_header(
+        self, plain_raw_email: str, app_config: AppConfig
+    ):
+        parsed = EmailParser(app_config).parse(plain_raw_email, subject_override="")
+        assert parsed.subject == "Daily Backup Complete"
 
     def test_plain_email_has_no_attachments(
         self, plain_raw_email: str, app_config: AppConfig

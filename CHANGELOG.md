@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Make `-s` override the Subject header of every pipe-mode message instead
+  of being ignored when the message already has one. The value is no longer
+  written into the message, so the spool file keeps the email as received
+  and a line break in the value cannot cut off the remaining headers.
+
 ## [1.3.1] - 2026-10-09
 
 ### Security
