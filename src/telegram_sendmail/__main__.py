@@ -77,6 +77,7 @@ _PROBE_MESSAGE: str = (
 def _deliver(
     raw_email: str,
     sender_override: str | None,
+    subject_override: str | None,
     config: AppConfig,
 ) -> None:
     """
@@ -92,11 +93,17 @@ def _deliver(
     4. **Format** — wrap in the Telegram message envelope with truncation.
     5. **Send**   — deliver via the Telegram Bot API.
 
+    Overrides replace the parsed fields and are never written into
+    `raw_email`, so the spool archives the message unmodified and an
+    override value cannot alter its header section.
+
     Args:
-        raw_email:       Raw RFC 2822 email string.
-        sender_override: Envelope sender from `-f`/`-r` flag or SMTP
-                         `MAIL FROM`. Overrides the `From` header.
-        config:          Resolved `AppConfig` instance.
+        raw_email:        Raw RFC 2822 email string.
+        sender_override:  Envelope sender from `-f`/`-r` flag or SMTP
+                          `MAIL FROM`. Overrides the `From` header.
+        subject_override: Subject from `-s` flag. Overrides the `Subject`
+                          header.
+        config:           Resolved `AppConfig` instance.
 
     Raises:
         ParsingError:     If the email body cannot be decoded.
@@ -109,7 +116,11 @@ def _deliver(
         pass  # Warning already emitted by MailSpooler.write
 
     parser = EmailParser(config)
-    parsed = parser.parse(raw_email, sender_override=sender_override)
+    parsed = parser.parse(
+        raw_email,
+        sender_override=sender_override,
+        subject_override=subject_override,
+    )
 
     if _is_suppressed(parsed, config):
         return
@@ -160,7 +171,9 @@ def _make_smtp_handler(config: AppConfig) -> Callable[[str, str | None], None]:
     """
 
     def handler(raw_email: str, envelope_sender: str | None) -> None:
-        _deliver(raw_email, envelope_sender, config)
+        # One -s value would overwrite the Subject of every message in the
+        # session, so SMTP mode passes no subject override.
+        _deliver(raw_email, envelope_sender, None, config)
 
     return handler
 
@@ -512,19 +525,8 @@ def _run_pipe_mode(
         logger.error("Failed to read email from stdin: %s", exc)
         return _EX_ERROR
 
-    # The parser accepts sender_override; subject must be injected as a
-    # synthetic header when passed via the CLI flag so that the existing
-    # parser interface is not widened unnecessarily.
-    #
-    # RFC 2822 §2.2: field names are case-insensitive, so we must perform
-    # a case-insensitive search to avoid injecting a duplicate header when
-    # the original uses a non-canonical casing (e.g. "subject:" instead of
-    # "Subject:").
-    if subject_override and "subject:" not in raw_email[:500].lower():
-        raw_email = f"Subject: {subject_override}\n{raw_email}"
-
     try:
-        _deliver(raw_email, sender_override, config)
+        _deliver(raw_email, sender_override, subject_override, config)
         return _EX_OK
     except ParsingError as exc:
         logger.error("Failed to parse email: %s", exc)

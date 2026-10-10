@@ -412,11 +412,12 @@ Positional recipient arguments (e.g. `sendmail root@localhost`) are
 consumed silently. All mail is forwarded to the configured `chat_id`
 regardless of recipients specified on the command line.
 
-When `-s` is used and the raw email does not already contain a Subject
-header, a synthetic `Subject:` header is prepended to the message before
-parsing. When a Subject header is already present (case-insensitive match
-within the first 500 characters of the input), the `-s` override is
-ignored.
+`-s` overrides the Subject header of the message read in pipe mode,
+wherever that header appears and whether or not the message has one. The
+value is collapsed to a single line and is never written into the message
+itself, so the spool file keeps the email as received. An empty value
+leaves the Subject header in place. In SMTP server mode `-s` has no
+effect; each message keeps its own Subject header.
 
 The `-t`, `-i`, and `-oi` flags are accepted for compatibility with system
 daemons that always pass them but have no effect on processing.

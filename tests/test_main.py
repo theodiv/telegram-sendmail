@@ -34,20 +34,22 @@ Coverage targets
     - Passes the text returned by format_for_telegram directly to send()
     - Propagates ParsingError raised by EmailParser.parse
     - Propagates TelegramAPIError raised by TelegramClient.send
+    - Replaces the sender and subject of the sent message with the given overrides
+    - Matches suppress_subject against the subject override, not the replaced Subject header
+
+`_make_smtp_handler`
+    - Delivers with the envelope sender and the Subject header of the message
 
 `_run_pipe_mode`
     - Returns _EX_OK (0) when _deliver completes without error
     - Returns _EX_ERROR (1) when sys.stdin.read() itself raises
-    - Returns _EX_ERROR (1) when _deliver raises ParsingError, TelegramSendmailError,
-      or an unexpected Exception
-    - Returns _EX_ERROR (1) when _deliver raises TelegramAPIError with a non-retriable
-      or no status code (status_code == None)
-    - Returns _EX_TEMPFAIL (75) when _deliver raises TelegramAPIError with a retriable
-      status code (429, 500, 502)
-    - Prepends "Subject: <override>" when subject_override is set and the raw email
-      contains no Subject header
-    - Does NOT modify the raw email when it already contains a Subject header
-      (case-insensitive) or when subject_override is None
+    - Returns _EX_ERROR (1) when _deliver raises ParsingError, TelegramSendmailError, or Exception
+    - Returns _EX_ERROR (1) when TelegramAPIError carries a non-retriable or no status code
+    - Returns _EX_TEMPFAIL (75) when TelegramAPIError carries a retriable status (429, 500, 502)
+    - Sends the subject override for a first, late, lower-case, absent, or body-only Subject line
+    - Collapses a subject override with line breaks to one line and keeps the headers intact
+    - Spools the message as received, with no Subject header added for the override
+    - Keeps the Subject header when the subject override is absent or empty
     - Logs a WARNING before returning _EX_TEMPFAIL on any retriable status
 
 `_run_smtp_mode`
@@ -75,19 +77,17 @@ Coverage targets
     - Output mentions "--help" to direct the operator to full documentation
 
 `main`
-    - Calls sys.exit(78) when ConfigLoader.load() raises ConfigurationError or
-      --config names a missing file
+    - Calls sys.exit(78) on ConfigurationError from ConfigLoader.load() or a missing --config file
     - Loads the file passed via --config and sends the probe to its chat_id
     - Calls sys.exit(1) when sys.stdin.isatty() returns True (interactive guard)
     - Calls sys.exit(0) when pipe-mode delivery succeeds with non-TTY stdin
-    - Invokes SMTPServer (via _run_smtp_mode) and calls sys.exit(0) when the -bs flag
-      is present and the SMTP session completes cleanly
+    - Sends the -s value as the subject of a piped message that carries a Subject header
+    - Invokes SMTPServer via _run_smtp_mode and calls sys.exit(0) when the -bs flag is present
     - Calls sys.exit(0) when --probe flag is present and probe succeeds
     - --probe takes dispatch priority over -bs if both are present
     - Calls sys.exit(75) when pipe-mode hits HTTP 429 rate limit
     - Installs a _TokenRedactFilter on every root-logger handler after config is loaded
-    - Logs ConfigurationError at ERROR level before exiting with code 78, naming
-      the --config path when one was given
+    - Logs ConfigurationError at ERROR level before exit 78, naming the --config path when given
 
 Design notes
 ------------
@@ -108,6 +108,10 @@ Design notes
 - The disabled-spooling `_deliver` test runs the real `MailSpooler` instead of
   `_TrackingSpooler`, because the stub records a call whether or not a write
   happens; only an empty `tmp_path` proves the pipeline wrote nothing.
+- The subject-override tests run the real `EmailParser`, `MailSpooler`, and
+  `TelegramClient` over `requests_mock` instead of the stubs. A stubbed
+  `_deliver` or parser accepts any override, so only the `sendMessage`
+  payload and the spool file show what the operator receives.
 - `TestTokenRedactFilter` constructs `logging.LogRecord` instances directly
   rather than emitting through a live logger, because the test target is the
   filter's string replacement logic, not the logging infrastructure.
@@ -139,6 +143,7 @@ from telegram_sendmail.__main__ import (
     _bounded_stdin_read,
     _deliver,
     _is_suppressed,
+    _make_smtp_handler,
     _run_interactive_mode,
     _run_pipe_mode,
     _run_probe_mode,
@@ -499,7 +504,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", self._TrackingSpooler)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, app_config)
+        _deliver("raw email", None, None, app_config)
         assert self._stages == ["spool", "parse", "send"]
 
     def test_non_matching_message_proceeds_through_full_pipeline(
@@ -510,7 +515,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", self._TrackingSpooler)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, config)
+        _deliver("raw email", None, None, config)
         assert self._stages == ["spool", "parse", "send"]
 
     def test_suppressed_message_still_spools_and_skips_send(
@@ -521,7 +526,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", self._TrackingSpooler)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, config)
+        _deliver("raw email", None, None, config)
         assert self._stages == ["spool", "parse"]
 
     def test_disabled_spool_still_parses_and_sends_without_writing(
@@ -534,7 +539,7 @@ class TestDeliverPipeline:
         config = replace(app_config, spool_path=None)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, config)
+        _deliver("raw email", None, None, config)
         assert self._stages == ["parse", "send"]
         assert not any(tmp_path.iterdir())
 
@@ -545,7 +550,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "EmailParser", _ParserOk)
         monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
         # Must not raise SpoolError or any other exception.
-        _deliver("raw email", None, app_config)
+        _deliver("raw email", None, None, app_config)
 
     def test_parser_invoked_after_spool_error(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
@@ -554,7 +559,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", _SpoolerFails)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
-        _deliver("raw email", None, app_config)
+        _deliver("raw email", None, None, app_config)
         assert self._stages == ["parse"], (
             "EmailParser.parse must be called even after SpoolError"
         )
@@ -566,7 +571,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", _SpoolerFails)
         monkeypatch.setattr(main_module, "EmailParser", _ParserOk)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, app_config)
+        _deliver("raw email", None, None, app_config)
         assert self._stages == ["send"], (
             "TelegramClient.send must be called even after SpoolError"
         )
@@ -581,7 +586,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "EmailParser", _ParserOk)
         monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.spool"):
-            _deliver("raw email", None, app_config)
+            _deliver("raw email", None, None, app_config)
         # The warning is emitted by MailSpooler.write (spool layer), not _deliver.
         assert any(r.levelname == "WARNING" for r in caplog.records)
 
@@ -592,7 +597,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", _SpoolerOk)
         monkeypatch.setattr(main_module, "EmailParser", _ParserOk)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, app_config)
+        _deliver("raw email", None, None, app_config)
         assert self._TrackingClient._sent_texts == [_FAKE_FORMATTED]
 
     def test_parsing_error_propagates_from_deliver(
@@ -606,7 +611,7 @@ class TestDeliverPipeline:
             lambda cfg: self._TrackingParser(cfg, failing=True),
         )
         with pytest.raises(ParsingError):
-            _deliver("raw email", None, app_config)
+            _deliver("raw email", None, None, app_config)
 
     def test_telegram_api_error_propagates_from_deliver(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
@@ -619,11 +624,60 @@ class TestDeliverPipeline:
             lambda cfg: self._TrackingClient(cfg, failing=True),
         )
         with pytest.raises(TelegramAPIError):
-            _deliver("raw email", None, app_config)
+            _deliver("raw email", None, None, app_config)
+
+    def test_overrides_replace_sender_and_subject_in_sent_message(
+        self,
+        plain_raw_email: str,
+        app_config: AppConfig,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        _deliver(plain_raw_email, "ops@host.local", "Disk Alert", app_config)
+        text = mock_telegram_ok.last_request.json()["text"]
+        assert "<b>ops@host.local</b>" in text
+        assert "<i>Disk Alert</i>" in text
+
+    def test_suppress_subject_matches_subject_override(
+        self,
+        plain_raw_email: str,
+        app_config: AppConfig,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        config = replace(app_config, suppress_subject=("disk alert",))
+        _deliver(plain_raw_email, None, "Disk Alert", config)
+        assert mock_telegram_ok.call_count == 0
+
+    def test_suppress_subject_ignores_replaced_header_subject(
+        self,
+        plain_raw_email: str,
+        app_config: AppConfig,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        config = replace(app_config, suppress_subject=("daily backup*",))
+        _deliver(plain_raw_email, None, "Disk Alert", config)
+        assert mock_telegram_ok.call_count == 1
 
 
 # --------------------------------------------------------------------------
-# _run_pipe_mode — exit-code routing
+# _make_smtp_handler — SMTP callback wiring
+# --------------------------------------------------------------------------
+
+
+class TestMakeSmtpHandler:
+    def test_delivers_with_envelope_sender_and_header_subject(
+        self,
+        plain_raw_email: str,
+        app_config: AppConfig,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        _make_smtp_handler(app_config)(plain_raw_email, "bounce@mta.local")
+        text = mock_telegram_ok.last_request.json()["text"]
+        assert "<b>bounce@mta.local</b>" in text
+        assert "<i>Daily Backup Complete</i>" in text
+
+
+# --------------------------------------------------------------------------
+# _run_pipe_mode — exit-code routing and subject override
 # --------------------------------------------------------------------------
 
 
@@ -642,15 +696,6 @@ class TestRunPipeMode:
             raise exc
 
         return _raiser
-
-    @staticmethod
-    def _capture_to(destination: list[str]) -> Any:
-        """Return a callable that appends its first argument to destination."""
-
-        def _capturer(raw: str, *args: Any) -> None:
-            destination.append(raw)
-
-        return _capturer
 
     def test_successful_delivery_returns_ex_ok(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
@@ -754,49 +799,70 @@ class TestRunPipeMode:
         monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_ERROR
 
-    def test_subject_override_prepended_when_no_subject_header_present(
-        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "Subject: Cron job\nFrom: root@host\n\nbody\n",
+            f"X-Long: {'a' * 600}\nSubject: Cron job\nFrom: root@host\n\nbody\n",
+            "subject: cron job\nFrom: root@host\n\nbody\n",
+            "From: root@host\n\nbody\n",
+            "From: root@host\n\nSubject: body text\n",
+        ],
+        ids=["first", "late", "lower-case", "absent", "body-line"],
+    )
+    def test_subject_override_replaces_message_subject(
+        self,
+        raw: str,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_telegram_ok: requests_mock_module.Mocker,
     ):
-        received: list[str] = []
-        monkeypatch.setattr(main_module, "_deliver", self._capture_to(received))
-        monkeypatch.setattr(sys, "stdin", io.StringIO("From: cron@host\n\nbody"))
-        _run_pipe_mode(None, "Injected Subject", app_config)
-        assert received[0].startswith("Subject: Injected Subject\n")
+        monkeypatch.setattr(sys, "stdin", io.StringIO(raw))
+        assert _run_pipe_mode(None, "Disk Alert", app_config) == _EX_OK
+        assert "<i>Disk Alert</i>" in mock_telegram_ok.last_request.json()["text"]
 
-    def test_subject_override_not_prepended_when_subject_header_already_present(
-        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    def test_subject_override_with_line_breaks_leaves_headers_intact(
+        self,
+        plain_raw_email: str,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_telegram_ok: requests_mock_module.Mocker,
     ):
-        received: list[str] = []
-        monkeypatch.setattr(main_module, "_deliver", self._capture_to(received))
-        # RFC 2822 §2.2: field names are case-insensitive; the guard checks
-        # raw_email[:500].lower() so we also test a mixed-case "Subject:" header.
-        monkeypatch.setattr(
-            sys, "stdin", io.StringIO("Subject: Existing Subject\n\nbody")
-        )
-        _run_pipe_mode(None, "Override Attempt", app_config)
-        # Original email must arrive unmodified.
-        assert not received[0].startswith("Subject: Override Attempt")
-        assert "Subject: Existing Subject" in received[0]
+        monkeypatch.setattr(sys, "stdin", io.StringIO(plain_raw_email))
+        _run_pipe_mode(None, "Alert\r\n\r\nforged body line", app_config)
+        text = mock_telegram_ok.last_request.json()["text"]
+        assert "<i>Alert forged body line</i>" in text
+        # A value that reached the header block would end it early and turn
+        # the real headers into body text.
+        assert "<b>cron@hostname.local</b>" in text
+        assert "Content-Type" not in text
 
-    def test_subject_override_is_case_insensitive_for_existing_header(
-        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    def test_spool_keeps_message_as_received_when_subject_overridden(
+        self,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_telegram_ok: requests_mock_module.Mocker,
     ):
-        received: list[str] = []
-        monkeypatch.setattr(main_module, "_deliver", self._capture_to(received))
-        # Lower-case "subject:" must also prevent duplication.
-        monkeypatch.setattr(sys, "stdin", io.StringIO("subject: lowercase\n\nbody"))
-        _run_pipe_mode(None, "Should Not Appear", app_config)
-        assert not received[0].startswith("Subject: Should Not Appear")
+        raw = "From: root@host\n\nbody\n"
+        monkeypatch.setattr(sys, "stdin", io.StringIO(raw))
+        _run_pipe_mode(None, "Disk Alert", app_config)
+        spooled = app_config.spool_path.read_text(encoding="utf-8")
+        assert spooled.endswith(raw)
+        assert "Subject:" not in spooled
 
-    def test_none_subject_override_leaves_email_unmodified(
-        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("subject_override", [None, ""], ids=["absent", "empty"])
+    def test_absent_or_empty_subject_override_keeps_header_subject(
+        self,
+        subject_override: str | None,
+        plain_raw_email: str,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_telegram_ok: requests_mock_module.Mocker,
     ):
-        received: list[str] = []
-        original = "From: cron@host\n\nbody"
-        monkeypatch.setattr(main_module, "_deliver", self._capture_to(received))
-        monkeypatch.setattr(sys, "stdin", io.StringIO(original))
-        _run_pipe_mode(None, None, app_config)
-        assert received[0] == original
+        monkeypatch.setattr(sys, "stdin", io.StringIO(plain_raw_email))
+        _run_pipe_mode(None, subject_override, app_config)
+        text = mock_telegram_ok.last_request.json()["text"]
+        assert "<i>Daily Backup Complete</i>" in text
 
     def test_rate_limit_warning_is_logged_before_returning_tempfail(
         self,
@@ -1123,7 +1189,7 @@ class TestMainDispatch:
         raise ConfigurationError("config file not found")
 
     @staticmethod
-    def _raise_rate_limit(raw: str, sender: Any, config: Any):
+    def _raise_rate_limit(raw: str, sender: Any, subject: Any, config: Any) -> None:
         """Simulate Telegram API rate limit by raising TelegramAPIError with 429."""
         raise TelegramAPIError("too many requests", status_code=429)
 
@@ -1212,6 +1278,21 @@ class TestMainDispatch:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == _EX_OK
+
+    def test_s_flag_replaces_subject_header_in_sent_message(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        patched_config_loader: AppConfig,
+        no_setup_logging: None,
+        plain_raw_email: str,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        monkeypatch.setattr(sys, "argv", ["telegram-sendmail", "-s", "Disk Alert"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(plain_raw_email))
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == _EX_OK
+        assert "<i>Disk Alert</i>" in mock_telegram_ok.last_request.json()["text"]
 
     def test_bs_flag_invokes_smtp_mode_and_exits_0(
         self,
