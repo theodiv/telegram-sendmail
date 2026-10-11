@@ -20,6 +20,7 @@
   - [Message Size Limit](#message-size-limit)
   - [Dot-Stuffing](#dot-stuffing)
   - [Session Reset](#session-reset)
+  - [Delivery Responses](#delivery-responses)
   - [Graceful Shutdown](#graceful-shutdown)
   - [Timeout](#timeout)
 - [CLI Reference](#cli-reference)
@@ -438,11 +439,14 @@ implemented in `_deliver()`:
    `WARNING` level and delivery continues. The stage is skipped when
    `spool_enabled = false` or when the `/tmp` fallback cannot be trusted.
 
-2. **Parse** — The raw RFC 2822 email string is decoded from its MIME
-   structure. The body is extracted (preferring `text/plain`, falling back
-   to `text/html`), HTML content is sanitised and converted to Telegram-
-   compatible markup, and the sender, subject, and attachment metadata are
-   extracted into a structured representation.
+2. **Parse** — The raw RFC 2822 email is decoded from its MIME structure.
+   The body is extracted (preferring `text/plain`, falling back to
+   `text/html`) and decoded with the charset it declares, whatever the
+   locale of the calling process. A body whose charset label is missing,
+   names ASCII, or is unknown is read as UTF-8, and bytes that cannot be
+   decoded appear as `�`. HTML content is sanitised and converted to
+   Telegram-compatible markup, and the sender, subject, and attachment
+   metadata are extracted into a structured representation.
 
 3. **Filter** — The resolved Subject and From header values are checked
    against the configured suppression patterns. If any pattern matches, the
@@ -472,7 +476,9 @@ manual recovery or re-delivery.
 The spool file path is derived as `<spool_dir>/<username>`, where
 `<username>` is the current user's login name (e.g. `/var/mail/root`). Each
 message is appended with a timestamped separator in mbox-style format,
-suitable for human inspection.
+suitable for human inspection. The message itself is written byte for byte
+as received and is never re-encoded, so one spool file can hold mail in
+several charsets.
 
 When the configured `spool_dir` (default: `/var/mail`) is not writable, the
 spooler falls back to `/tmp/.telegram-sendmail-spool-<uid>/<username>`,
@@ -712,6 +718,17 @@ ls -la /usr/sbin/sendmail
 If the symlink points to a different binary, re-create it following the
 instructions in
 [Registering as the System `sendmail`](#registering-as-the-system-sendmail).
+
+#### *`�` characters in a forwarded message*
+
+The body contains bytes that are not valid in the charset used to decode
+it. The charset the message declares is used; a body with no charset label,
+an ASCII label, or an unknown label is read as UTF-8, and an unknown label
+also logs a `WARNING` that names it. Declare the real charset at the
+source. For cron jobs, a `CONTENT_TYPE="text/plain; charset=iso-8859-1"`
+line in the crontab labels the output of every job below it. The spool file
+keeps the message exactly as received, so the original bytes remain
+available.
 
 #### *Spool directory warning in logs*
 

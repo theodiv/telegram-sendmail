@@ -37,6 +37,10 @@ class MailSpooler:
     envelope format well enough for human inspection without requiring a
     full mbox parser.
 
+    The email is appended as the bytes received, with no decoding step.
+    A spool that re-encoded its input could only hold mail valid in that
+    one encoding, and its copy would no longer be the original message.
+
     The spool file is opened with `os.open()` using `O_NOFOLLOW` so that a
     local attacker cannot redirect writes to an arbitrary file by
     pre-placing a symlink at the spool path before the daemon's first run.
@@ -54,13 +58,13 @@ class MailSpooler:
     Usage::
 
         spooler = MailSpooler(config)
-        spooler.write(raw_email_string)
+        spooler.write(raw_email)
     """
 
     def __init__(self, config: AppConfig) -> None:
         self._spool_path: Path | None = config.spool_path
 
-    def write(self, raw_email: str) -> None:
+    def write(self, raw_email: bytes) -> None:
         """
         Append `raw_email` to the spool file.
 
@@ -79,7 +83,7 @@ class MailSpooler:
         disabled.
 
         Args:
-            raw_email: Raw RFC 2822 email string exactly as received from
+            raw_email: Raw RFC 2822 email bytes exactly as received from
                        `stdin` or the SMTP DATA stream.
 
         Raises:
@@ -93,7 +97,8 @@ class MailSpooler:
             return
 
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S %z")
-        separator = f"\n{_SEPARATOR}\n{timestamp}\n{_SEPARATOR}\n"
+        # Numeric directives only, so the timestamp is ASCII in every locale
+        separator = f"\n{_SEPARATOR}\n{timestamp}\n{_SEPARATOR}\n".encode("ascii")
 
         try:
             # mode=0o700 applies only when the directory is newly created.
@@ -104,15 +109,15 @@ class MailSpooler:
 
             _flags = os.O_CREAT | os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW
             raw_fd = os.open(self._spool_path, _flags, 0o600)
-            with os.fdopen(raw_fd, "a", encoding="utf-8") as fh:
+            with os.fdopen(raw_fd, "ab") as fh:
                 # Enforce 0600 on the open fd to override the process umask,
                 # which may have been set to a more permissive value by the
                 # calling daemon.
                 os.fchmod(fh.fileno(), stat.S_IRUSR | stat.S_IWUSR)
                 fh.write(separator)
                 fh.write(raw_email)
-                if not raw_email.endswith("\n"):
-                    fh.write("\n")
+                if not raw_email.endswith(b"\n"):
+                    fh.write(b"\n")
 
         except OSError as exc:
             logger.warning(
