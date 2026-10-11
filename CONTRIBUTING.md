@@ -1,7 +1,7 @@
 # Contributing to Telegram Sendmail
 
-Contributions are welcome. This document defines the standards, workflow, and
-expectations for all submissions to this project.
+This document defines the standards, workflow, and expectations for all
+submissions.
 
 ## Table of Contents
 
@@ -167,7 +167,7 @@ to real filesystem paths outside `pytest`'s `tmp_path`.
 pytest
 
 # Single module
-pytest tests/test_parser.py
+pytest tests/parser/test_parser.py
 
 # Verbose output
 pytest -v
@@ -177,9 +177,10 @@ pytest -k "smtp"
 ```
 
 The global coverage gate is set at **80%**. Critical logic in `client.py`,
-`parser.py`, and `smtp.py` is enforced at **90%** by CI. New code should
-meet or exceed these thresholds. To verify per-module thresholds locally
-before pushing, run the enforcement script after the test suite:
+`smtp.py`, and every module of the `parser` package is enforced at **90%**
+by CI. New code should meet or exceed these thresholds. To verify per-module
+thresholds locally before pushing, run the enforcement script after the test
+suite:
 
 ```bash
 # Enforce per-module coverage thresholds (requires a prior pytest run)
