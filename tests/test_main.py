@@ -12,9 +12,12 @@ Coverage targets
 
 `_bounded_stdin_read`
     - Returns full content when input is under or exactly at `_MAX_PIPE_SIZE`
-    - Truncates oversized input to exactly `_MAX_PIPE_SIZE` characters and emits a WARNING
+    - Truncates oversized input to exactly `_MAX_PIPE_SIZE` bytes and emits a WARNING
     - Emits no WARNING when input is within the limit
-    - Returns an empty string for empty stdin
+    - Reads input beyond the limit to its end, so the writing process is never blocked
+    - Returns empty bytes for empty stdin
+    - Returns 8-bit input byte for byte, without decoding it
+    - Counts the limit in bytes, not characters
 
 `_TokenRedactFilter`
     - Replaces the bot token with a safe placeholder in log record messages
@@ -39,16 +42,19 @@ Coverage targets
 
 `_make_smtp_handler`
     - Delivers with the envelope sender and the Subject header of the message
+    - Delivers a non-UTF-8 message decoded by the charset it declares
 
 `_run_pipe_mode`
     - Returns _EX_OK (0) when _deliver completes without error
-    - Returns _EX_ERROR (1) when sys.stdin.read() itself raises
+    - Returns _EX_ERROR (1) and logs the cause when reading stdin raises OSError
     - Returns _EX_ERROR (1) when _deliver raises ParsingError, TelegramSendmailError, or Exception
     - Returns _EX_ERROR (1) when TelegramAPIError carries a non-retriable or no status code
     - Returns _EX_TEMPFAIL (75) when TelegramAPIError carries a retriable status (429, 500, 502)
     - Sends the subject override for a first, late, lower-case, absent, or body-only Subject line
     - Collapses a subject override with line breaks to one line and keeps the headers intact
     - Spools the message as received, with no Subject header added for the override
+    - Delivers an 8-bit UTF-8 body intact
+    - Delivers a non-UTF-8 message decoded by its declared charset and spools it byte for byte
     - Keeps the Subject header when the subject override is absent or empty
     - Logs a WARNING before returning _EX_TEMPFAIL on any retriable status
 
@@ -108,10 +114,13 @@ Design notes
 - The disabled-spooling `_deliver` test runs the real `MailSpooler` instead of
   `_TrackingSpooler`, because the stub records a call whether or not a write
   happens; only an empty `tmp_path` proves the pipeline wrote nothing.
-- The subject-override tests run the real `EmailParser`, `MailSpooler`, and
-  `TelegramClient` over `requests_mock` instead of the stubs. A stubbed
-  `_deliver` or parser accepts any override, so only the `sendMessage`
-  payload and the spool file show what the operator receives.
+- The subject-override and 8-bit tests run the real `EmailParser`, `MailSpooler`,
+  and `TelegramClient` over `requests_mock` instead of the stubs. A stubbed
+  `_deliver` or parser accepts any input, so only the `sendMessage` payload
+  and the spool file show what the operator receives.
+- `_stdin` wraps the input bytes in a strict-ASCII text layer. A text-mode read
+  of 8-bit input raises `UnicodeDecodeError`, so the 8-bit tests pass only when
+  the code reads `sys.stdin.buffer`.
 - `TestTokenRedactFilter` constructs `logging.LogRecord` instances directly
   rather than emitting through a live logger, because the test target is the
   filter's string replacement logic, not the logging infrastructure.
@@ -175,15 +184,20 @@ _FAKE_PARSED = ParsedEmail(
 _FAKE_FORMATTED = "📬 <b>root@localhost</b>\nFormatted body"
 
 
+def _stdin(data: bytes = b"") -> io.TextIOWrapper:
+    """Return a stdin stand-in holding `data` behind a strict-ASCII text layer."""
+    return io.TextIOWrapper(io.BytesIO(data), encoding="ascii")
+
+
 class _SpoolerOk:
     """Spooler stub that records the raw email and succeeds silently."""
 
-    last_written: str = ""
+    last_written: bytes = b""
 
     def __init__(self, config: AppConfig) -> None:
         pass
 
-    def write(self, raw: str) -> None:
+    def write(self, raw: bytes) -> None:
         _SpoolerOk.last_written = raw
 
 
@@ -193,7 +207,7 @@ class _SpoolerFails:
     def __init__(self, config: AppConfig) -> None:
         pass
 
-    def write(self, raw: str) -> None:
+    def write(self, raw: bytes) -> None:
         # Real MailSpooler.write emits this WARNING before raising SpoolError.
         logging.getLogger("telegram_sendmail.spool").warning(
             "Failed to write email to spool file '/tmp/test': disk full — "
@@ -210,7 +224,7 @@ class _ParserOk:
 
     def parse(
         self,
-        raw: str,
+        raw: bytes,
         sender_override: str | None = None,
         subject_override: str | None = None,
     ) -> ParsedEmail:
@@ -331,22 +345,22 @@ class TestBoundedStdinRead:
     def test_content_under_limit_is_returned_unchanged(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        content = "x" * 100
-        monkeypatch.setattr(sys, "stdin", io.StringIO(content))
+        content = b"x" * 100
+        monkeypatch.setattr(sys, "stdin", _stdin(content))
         assert _bounded_stdin_read() == content
 
     def test_content_exactly_at_limit_is_returned_unchanged(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        content = "x" * _MAX_PIPE_SIZE
-        monkeypatch.setattr(sys, "stdin", io.StringIO(content))
+        content = b"x" * _MAX_PIPE_SIZE
+        monkeypatch.setattr(sys, "stdin", _stdin(content))
         assert _bounded_stdin_read() == content
 
     def test_oversized_input_is_truncated_to_max_pipe_size(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        content = "x" * (_MAX_PIPE_SIZE + 1000)
-        monkeypatch.setattr(sys, "stdin", io.StringIO(content))
+        content = b"x" * (_MAX_PIPE_SIZE + 1000)
+        monkeypatch.setattr(sys, "stdin", _stdin(content))
         result = _bounded_stdin_read()
         assert len(result) == _MAX_PIPE_SIZE
 
@@ -355,8 +369,8 @@ class TestBoundedStdinRead:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ):
-        content = "x" * (_MAX_PIPE_SIZE + 1)
-        monkeypatch.setattr(sys, "stdin", io.StringIO(content))
+        content = b"x" * (_MAX_PIPE_SIZE + 1)
+        monkeypatch.setattr(sys, "stdin", _stdin(content))
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.__main__"):
             _bounded_stdin_read()
         assert any(r.levelname == "WARNING" for r in caplog.records)
@@ -366,14 +380,39 @@ class TestBoundedStdinRead:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ):
-        monkeypatch.setattr(sys, "stdin", io.StringIO("small payload"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"small payload"))
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.__main__"):
             _bounded_stdin_read()
         assert not any(r.levelname == "WARNING" for r in caplog.records)
 
-    def test_empty_stdin_returns_empty_string(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(sys, "stdin", io.StringIO())
-        assert _bounded_stdin_read() == ""
+    def test_input_beyond_the_limit_is_drained(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "stdin", _stdin(b"x" * (_MAX_PIPE_SIZE + 200_000)))
+        _bounded_stdin_read()
+        assert sys.stdin.buffer.read() == b""
+
+    def test_empty_stdin_returns_empty_bytes(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "stdin", _stdin())
+        assert _bounded_stdin_read() == b""
+
+    def test_eight_bit_input_is_returned_byte_for_byte(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        content = bytes(range(256)) * 4
+        monkeypatch.setattr(sys, "stdin", _stdin(content))
+        assert _bounded_stdin_read() == content
+
+    def test_limit_counts_bytes_not_characters(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        # Two-byte characters: half the limit in characters, 20 bytes over it.
+        content = "é".encode() * (_MAX_PIPE_SIZE // 2 + 10)
+        monkeypatch.setattr(sys, "stdin", _stdin(content))
+        with caplog.at_level(logging.WARNING, logger="telegram_sendmail.__main__"):
+            result = _bounded_stdin_read()
+        assert len(result) == _MAX_PIPE_SIZE
+        assert any(r.levelname == "WARNING" for r in caplog.records)
 
 
 # --------------------------------------------------------------------------
@@ -459,7 +498,7 @@ class TestDeliverPipeline:
         def __init__(self, config: AppConfig) -> None:
             pass
 
-        def write(self, raw: str) -> None:
+        def write(self, raw: bytes) -> None:
             TestDeliverPipeline._stages.append("spool")
 
     class _TrackingParser:
@@ -468,7 +507,7 @@ class TestDeliverPipeline:
         def __init__(self, config: AppConfig, *, failing: bool = False) -> None:
             self._failing = failing
 
-        def parse(self, raw: str, **kw: Any) -> ParsedEmail:
+        def parse(self, raw: bytes, **kw: Any) -> ParsedEmail:
             if self._failing:
                 raise ParsingError("malformed MIME")
             TestDeliverPipeline._stages.append("parse")
@@ -504,7 +543,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", self._TrackingSpooler)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, None, app_config)
+        _deliver(b"raw email", None, None, app_config)
         assert self._stages == ["spool", "parse", "send"]
 
     def test_non_matching_message_proceeds_through_full_pipeline(
@@ -515,7 +554,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", self._TrackingSpooler)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, None, config)
+        _deliver(b"raw email", None, None, config)
         assert self._stages == ["spool", "parse", "send"]
 
     def test_suppressed_message_still_spools_and_skips_send(
@@ -526,7 +565,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", self._TrackingSpooler)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, None, config)
+        _deliver(b"raw email", None, None, config)
         assert self._stages == ["spool", "parse"]
 
     def test_disabled_spool_still_parses_and_sends_without_writing(
@@ -539,7 +578,7 @@ class TestDeliverPipeline:
         config = replace(app_config, spool_path=None)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, None, config)
+        _deliver(b"raw email", None, None, config)
         assert self._stages == ["parse", "send"]
         assert not any(tmp_path.iterdir())
 
@@ -550,7 +589,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "EmailParser", _ParserOk)
         monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
         # Must not raise SpoolError or any other exception.
-        _deliver("raw email", None, None, app_config)
+        _deliver(b"raw email", None, None, app_config)
 
     def test_parser_invoked_after_spool_error(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
@@ -559,7 +598,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", _SpoolerFails)
         monkeypatch.setattr(main_module, "EmailParser", self._TrackingParser)
         monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
-        _deliver("raw email", None, None, app_config)
+        _deliver(b"raw email", None, None, app_config)
         assert self._stages == ["parse"], (
             "EmailParser.parse must be called even after SpoolError"
         )
@@ -571,7 +610,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", _SpoolerFails)
         monkeypatch.setattr(main_module, "EmailParser", _ParserOk)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, None, app_config)
+        _deliver(b"raw email", None, None, app_config)
         assert self._stages == ["send"], (
             "TelegramClient.send must be called even after SpoolError"
         )
@@ -586,7 +625,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "EmailParser", _ParserOk)
         monkeypatch.setattr(main_module, "TelegramClient", _ClientOk)
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.spool"):
-            _deliver("raw email", None, None, app_config)
+            _deliver(b"raw email", None, None, app_config)
         # The warning is emitted by MailSpooler.write (spool layer), not _deliver.
         assert any(r.levelname == "WARNING" for r in caplog.records)
 
@@ -597,7 +636,7 @@ class TestDeliverPipeline:
         monkeypatch.setattr(main_module, "MailSpooler", _SpoolerOk)
         monkeypatch.setattr(main_module, "EmailParser", _ParserOk)
         monkeypatch.setattr(main_module, "TelegramClient", self._TrackingClient)
-        _deliver("raw email", None, None, app_config)
+        _deliver(b"raw email", None, None, app_config)
         assert self._TrackingClient._sent_texts == [_FAKE_FORMATTED]
 
     def test_parsing_error_propagates_from_deliver(
@@ -611,7 +650,7 @@ class TestDeliverPipeline:
             lambda cfg: self._TrackingParser(cfg, failing=True),
         )
         with pytest.raises(ParsingError):
-            _deliver("raw email", None, None, app_config)
+            _deliver(b"raw email", None, None, app_config)
 
     def test_telegram_api_error_propagates_from_deliver(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
@@ -624,11 +663,11 @@ class TestDeliverPipeline:
             lambda cfg: self._TrackingClient(cfg, failing=True),
         )
         with pytest.raises(TelegramAPIError):
-            _deliver("raw email", None, None, app_config)
+            _deliver(b"raw email", None, None, app_config)
 
     def test_overrides_replace_sender_and_subject_in_sent_message(
         self,
-        plain_raw_email: str,
+        plain_raw_email: bytes,
         app_config: AppConfig,
         mock_telegram_ok: requests_mock_module.Mocker,
     ):
@@ -639,7 +678,7 @@ class TestDeliverPipeline:
 
     def test_suppress_subject_matches_subject_override(
         self,
-        plain_raw_email: str,
+        plain_raw_email: bytes,
         app_config: AppConfig,
         mock_telegram_ok: requests_mock_module.Mocker,
     ):
@@ -649,7 +688,7 @@ class TestDeliverPipeline:
 
     def test_suppress_subject_ignores_replaced_header_subject(
         self,
-        plain_raw_email: str,
+        plain_raw_email: bytes,
         app_config: AppConfig,
         mock_telegram_ok: requests_mock_module.Mocker,
     ):
@@ -666,7 +705,7 @@ class TestDeliverPipeline:
 class TestMakeSmtpHandler:
     def test_delivers_with_envelope_sender_and_header_subject(
         self,
-        plain_raw_email: str,
+        plain_raw_email: bytes,
         app_config: AppConfig,
         mock_telegram_ok: requests_mock_module.Mocker,
     ):
@@ -674,6 +713,15 @@ class TestMakeSmtpHandler:
         text = mock_telegram_ok.last_request.json()["text"]
         assert "<b>bounce@mta.local</b>" in text
         assert "<i>Daily Backup Complete</i>" in text
+
+    def test_delivers_non_utf8_message_decoded_by_declared_charset(
+        self,
+        latin1_raw_email: bytes,
+        app_config: AppConfig,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        _make_smtp_handler(app_config)(latin1_raw_email, "bounce@mta.local")
+        assert "Température à 25°C" in mock_telegram_ok.last_request.json()["text"]
 
 
 # --------------------------------------------------------------------------
@@ -683,10 +731,13 @@ class TestMakeSmtpHandler:
 
 class TestRunPipeMode:
     class _UnreadableStdin:
-        """stdin stub that raises OSError on read(), simulating a broken pipe."""
+        """stdin stub whose binary stream raises OSError, simulating a broken pipe."""
 
-        def read(self) -> str:
-            raise OSError("broken pipe")
+        class _Buffer:
+            def read(self, size: int = -1) -> bytes:
+                raise OSError("broken pipe")
+
+        buffer = _Buffer()
 
     @staticmethod
     def _fail_with(exc: Exception) -> Any:
@@ -701,14 +752,20 @@ class TestRunPipeMode:
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr(main_module, "_deliver", lambda *_: None)
-        monkeypatch.setattr(sys, "stdin", io.StringIO("From: x\n\nbody"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"From: x\n\nbody"))
         assert _run_pipe_mode(None, None, app_config) == _EX_OK
 
     def test_stdin_read_error_returns_ex_error(
-        self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+        self,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ):
         monkeypatch.setattr(sys, "stdin", self._UnreadableStdin())
-        assert _run_pipe_mode(None, None, app_config) == _EX_ERROR
+        with caplog.at_level(logging.ERROR, logger="telegram_sendmail.__main__"):
+            result = _run_pipe_mode(None, None, app_config)
+        assert result == _EX_ERROR
+        assert any("broken pipe" in r.getMessage() for r in caplog.records)
 
     def test_parsing_error_returns_ex_error(
         self, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
@@ -718,7 +775,7 @@ class TestRunPipeMode:
             "_deliver",
             self._fail_with(ParsingError("malformed MIME content")),
         )
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_ERROR
 
     def test_telegram_rate_limit_429_returns_ex_tempfail(
@@ -729,7 +786,7 @@ class TestRunPipeMode:
             "_deliver",
             self._fail_with(TelegramAPIError("too many requests", status_code=429)),
         )
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_TEMPFAIL
 
     def test_telegram_server_error_500_returns_ex_tempfail(
@@ -740,7 +797,7 @@ class TestRunPipeMode:
             "_deliver",
             self._fail_with(TelegramAPIError("internal server error", status_code=500)),
         )
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_TEMPFAIL
 
     def test_telegram_bad_gateway_502_returns_ex_tempfail(
@@ -751,7 +808,7 @@ class TestRunPipeMode:
             "_deliver",
             self._fail_with(TelegramAPIError("bad gateway", status_code=502)),
         )
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_TEMPFAIL
 
     def test_telegram_api_error_non_retriable_status_returns_ex_error(
@@ -762,7 +819,7 @@ class TestRunPipeMode:
             "_deliver",
             self._fail_with(TelegramAPIError("bad request", status_code=400)),
         )
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_ERROR
 
     def test_telegram_api_error_with_no_status_returns_ex_error(
@@ -774,7 +831,7 @@ class TestRunPipeMode:
             # status_code=None means the error arose before any HTTP response.
             self._fail_with(TelegramAPIError("connection failed", status_code=None)),
         )
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_ERROR
 
     def test_telegram_sendmail_error_returns_ex_error(
@@ -785,7 +842,7 @@ class TestRunPipeMode:
             "_deliver",
             self._fail_with(TelegramSendmailError("generic failure")),
         )
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_ERROR
 
     def test_unexpected_bare_exception_returns_ex_error(
@@ -796,39 +853,41 @@ class TestRunPipeMode:
             "_deliver",
             self._fail_with(RuntimeError("unexpected crash occurred")),
         )
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         assert _run_pipe_mode(None, None, app_config) == _EX_ERROR
 
     @pytest.mark.parametrize(
         "raw",
         [
-            "Subject: Cron job\nFrom: root@host\n\nbody\n",
-            f"X-Long: {'a' * 600}\nSubject: Cron job\nFrom: root@host\n\nbody\n",
-            "subject: cron job\nFrom: root@host\n\nbody\n",
-            "From: root@host\n\nbody\n",
-            "From: root@host\n\nSubject: body text\n",
+            b"Subject: Cron job\nFrom: root@host\n\nbody\n",
+            b"X-Long: "
+            + b"a" * 600
+            + b"\nSubject: Cron job\nFrom: root@host\n\nbody\n",
+            b"subject: cron job\nFrom: root@host\n\nbody\n",
+            b"From: root@host\n\nbody\n",
+            b"From: root@host\n\nSubject: body text\n",
         ],
         ids=["first", "late", "lower-case", "absent", "body-line"],
     )
     def test_subject_override_replaces_message_subject(
         self,
-        raw: str,
+        raw: bytes,
         app_config: AppConfig,
         monkeypatch: pytest.MonkeyPatch,
         mock_telegram_ok: requests_mock_module.Mocker,
     ):
-        monkeypatch.setattr(sys, "stdin", io.StringIO(raw))
+        monkeypatch.setattr(sys, "stdin", _stdin(raw))
         assert _run_pipe_mode(None, "Disk Alert", app_config) == _EX_OK
         assert "<i>Disk Alert</i>" in mock_telegram_ok.last_request.json()["text"]
 
     def test_subject_override_with_line_breaks_leaves_headers_intact(
         self,
-        plain_raw_email: str,
+        plain_raw_email: bytes,
         app_config: AppConfig,
         monkeypatch: pytest.MonkeyPatch,
         mock_telegram_ok: requests_mock_module.Mocker,
     ):
-        monkeypatch.setattr(sys, "stdin", io.StringIO(plain_raw_email))
+        monkeypatch.setattr(sys, "stdin", _stdin(plain_raw_email))
         _run_pipe_mode(None, "Alert\r\n\r\nforged body line", app_config)
         text = mock_telegram_ok.last_request.json()["text"]
         assert "<i>Alert forged body line</i>" in text
@@ -843,23 +902,47 @@ class TestRunPipeMode:
         monkeypatch: pytest.MonkeyPatch,
         mock_telegram_ok: requests_mock_module.Mocker,
     ):
-        raw = "From: root@host\n\nbody\n"
-        monkeypatch.setattr(sys, "stdin", io.StringIO(raw))
+        raw = b"From: root@host\n\nbody\n"
+        monkeypatch.setattr(sys, "stdin", _stdin(raw))
         _run_pipe_mode(None, "Disk Alert", app_config)
-        spooled = app_config.spool_path.read_text(encoding="utf-8")
+        spooled = app_config.spool_path.read_bytes()
         assert spooled.endswith(raw)
-        assert "Subject:" not in spooled
+        assert b"Subject:" not in spooled
+
+    def test_eight_bit_utf8_body_reaches_telegram_intact(
+        self,
+        utf8_raw_email: bytes,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        monkeypatch.setattr(sys, "stdin", _stdin(utf8_raw_email))
+        assert _run_pipe_mode(None, None, app_config) == _EX_OK
+        text = mock_telegram_ok.last_request.json()["text"]
+        assert "Température 25°C — coût €100 📬" in text
+
+    def test_message_that_is_not_utf8_is_delivered_and_spooled_as_received(
+        self,
+        latin1_raw_email: bytes,
+        app_config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_telegram_ok: requests_mock_module.Mocker,
+    ):
+        monkeypatch.setattr(sys, "stdin", _stdin(latin1_raw_email))
+        assert _run_pipe_mode(None, None, app_config) == _EX_OK
+        assert "Température à 25°C" in mock_telegram_ok.last_request.json()["text"]
+        assert app_config.spool_path.read_bytes().endswith(latin1_raw_email)
 
     @pytest.mark.parametrize("subject_override", [None, ""], ids=["absent", "empty"])
     def test_absent_or_empty_subject_override_keeps_header_subject(
         self,
         subject_override: str | None,
-        plain_raw_email: str,
+        plain_raw_email: bytes,
         app_config: AppConfig,
         monkeypatch: pytest.MonkeyPatch,
         mock_telegram_ok: requests_mock_module.Mocker,
     ):
-        monkeypatch.setattr(sys, "stdin", io.StringIO(plain_raw_email))
+        monkeypatch.setattr(sys, "stdin", _stdin(plain_raw_email))
         _run_pipe_mode(None, subject_override, app_config)
         text = mock_telegram_ok.last_request.json()["text"]
         assert "<i>Daily Backup Complete</i>" in text
@@ -875,7 +958,7 @@ class TestRunPipeMode:
             "_deliver",
             self._fail_with(TelegramAPIError("too many requests", status_code=429)),
         )
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.__main__"):
             result = _run_pipe_mode(None, None, app_config)
         assert result == _EX_TEMPFAIL
@@ -956,11 +1039,15 @@ class TestRunSmtpMode:
 
 class TestRunProbeMode:
     class _SpyStdin:
-        """stdin stub that records whether read() was called."""
+        """stdin stub that records whether read() was called, text or binary."""
 
         def __init__(self, stdin: TextIO) -> None:
             self._original_stdin = stdin
             self._read_called = False
+
+        @property
+        def buffer(self) -> TestRunProbeMode._SpyStdin:
+            return self
 
         def read(self, *args: Any) -> str:
             self._read_called = True
@@ -1189,7 +1276,7 @@ class TestMainDispatch:
         raise ConfigurationError("config file not found")
 
     @staticmethod
-    def _raise_rate_limit(raw: str, sender: Any, subject: Any, config: Any) -> None:
+    def _raise_rate_limit(raw: bytes, sender: Any, subject: Any, config: Any) -> None:
         """Simulate Telegram API rate limit by raising TelegramAPIError with 429."""
         raise TelegramAPIError("too many requests", status_code=429)
 
@@ -1272,7 +1359,7 @@ class TestMainDispatch:
         no_setup_logging: None,
     ):
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail"])
-        monkeypatch.setattr(sys, "stdin", io.StringIO("From: x\n\nbody"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"From: x\n\nbody"))
         # Stub _deliver so no real network or filesystem access occurs.
         monkeypatch.setattr(main_module, "_deliver", lambda *_: None)
         with pytest.raises(SystemExit) as exc_info:
@@ -1284,11 +1371,11 @@ class TestMainDispatch:
         monkeypatch: pytest.MonkeyPatch,
         patched_config_loader: AppConfig,
         no_setup_logging: None,
-        plain_raw_email: str,
+        plain_raw_email: bytes,
         mock_telegram_ok: requests_mock_module.Mocker,
     ):
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail", "-s", "Disk Alert"])
-        monkeypatch.setattr(sys, "stdin", io.StringIO(plain_raw_email))
+        monkeypatch.setattr(sys, "stdin", _stdin(plain_raw_email))
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == _EX_OK
@@ -1343,7 +1430,7 @@ class TestMainDispatch:
         no_setup_logging: None,
     ):
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail"])
-        monkeypatch.setattr(sys, "stdin", io.StringIO("email"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"email"))
         monkeypatch.setattr(main_module, "_deliver", self._raise_rate_limit)
         with pytest.raises(SystemExit) as exc_info:
             main()
@@ -1373,7 +1460,7 @@ class TestMainDispatch:
         no_setup_logging: None,
     ):
         monkeypatch.setattr(sys, "argv", ["telegram-sendmail", "--debug"])
-        monkeypatch.setattr(sys, "stdin", io.StringIO("From: x\n\nbody"))
+        monkeypatch.setattr(sys, "stdin", _stdin(b"From: x\n\nbody"))
         monkeypatch.setattr(main_module, "_deliver", lambda *_: None)
         with pytest.raises(SystemExit):
             main()

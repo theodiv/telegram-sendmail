@@ -14,6 +14,7 @@ Coverage targets
     - A human-readable timestamp appears inside the separator block
     - Appends a trailing newline when the raw email does not end with one
     - Does not append a double newline when the raw email already ends with one
+    - Writes every byte value unchanged, including bytes that are not valid UTF-8
 
 `MailSpooler.write` — file permissions
     - Enforces exactly 0600 (owner read/write only) permissions on the spool file
@@ -90,14 +91,14 @@ class TestMailSpoolerDirectoryManagement:
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
         assert not tmp_spool_path.parent.exists()
-        _make_spooler(app_config, tmp_spool_path).write("email body")
+        _make_spooler(app_config, tmp_spool_path).write(b"email body")
         assert tmp_spool_path.parent.is_dir()
 
     @pytest.mark.skipif(os.getuid() == 0, reason="root bypasses file permissions")
     def test_created_parent_directory_has_0700_permissions(
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
-        _make_spooler(app_config, tmp_spool_path).write("email body")
+        _make_spooler(app_config, tmp_spool_path).write(b"email body")
         mode = stat.S_IMODE(tmp_spool_path.parent.stat().st_mode)
         assert mode == 0o700
 
@@ -106,8 +107,8 @@ class TestMailSpoolerDirectoryManagement:
     ):
         tmp_spool_path.parent.mkdir(parents=True)
         # Second call must not raise even though the directory exists.
-        _make_spooler(app_config, tmp_spool_path).write("first email")
-        _make_spooler(app_config, tmp_spool_path).write("second email")
+        _make_spooler(app_config, tmp_spool_path).write(b"first email")
+        _make_spooler(app_config, tmp_spool_path).write(b"second email")
 
     def test_write_raises_spool_error_when_spool_path_is_a_symlink(
         self, tmp_spool_path: Path, app_config: AppConfig
@@ -121,7 +122,7 @@ class TestMailSpoolerDirectoryManagement:
         tmp_spool_path.symlink_to(target)
 
         with pytest.raises(SpoolError):
-            _make_spooler(app_config, tmp_spool_path).write("email content")
+            _make_spooler(app_config, tmp_spool_path).write(b"email content")
 
         # O_NOFOLLOW must have blocked the open before any write occurred.
         assert "email content" not in target.read_text()
@@ -137,57 +138,64 @@ class TestMailSpoolerWriteContent:
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
         _make_spooler(app_config, tmp_spool_path).write(
-            "Subject: Test\n\nHello from spool"
+            b"Subject: Test\n\nHello from spool"
         )
-        content = tmp_spool_path.read_text(encoding="utf-8")
-        assert "Hello from spool" in content
+        content = tmp_spool_path.read_bytes()
+        assert b"Hello from spool" in content
 
     def test_separator_block_is_present_before_email_content(
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
-        _make_spooler(app_config, tmp_spool_path).write("body text")
-        content = tmp_spool_path.read_text(encoding="utf-8")
+        _make_spooler(app_config, tmp_spool_path).write(b"body text")
+        content = tmp_spool_path.read_bytes()
         # The separator is a line of dashes; its position must precede the body.
-        sep_pos = content.find("-" * 10)
-        body_pos = content.find("body text")
+        sep_pos = content.find(b"-" * 10)
+        body_pos = content.find(b"body text")
         assert sep_pos != -1
         assert sep_pos < body_pos
 
     def test_separator_block_contains_a_timestamp(
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
-        _make_spooler(app_config, tmp_spool_path).write("body")
-        content = tmp_spool_path.read_text(encoding="utf-8")
+        _make_spooler(app_config, tmp_spool_path).write(b"body")
+        content = tmp_spool_path.read_bytes()
         # The timestamp format produced by time.strftime is "YYYY-MM-DD HH:MM:SS".
         import re
 
-        assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", content)
+        assert re.search(rb"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", content)
 
     def test_trailing_newline_appended_when_absent(
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
         # Email without trailing newline must be terminated so adjacent writes
         # do not bleed together in the mbox-style spool file.
-        _make_spooler(app_config, tmp_spool_path).write("no newline at end")
-        content = tmp_spool_path.read_text(encoding="utf-8")
-        assert content.endswith("\n")
+        _make_spooler(app_config, tmp_spool_path).write(b"no newline at end")
+        content = tmp_spool_path.read_bytes()
+        assert content.endswith(b"\n")
 
     def test_no_extra_newline_when_email_already_ends_with_one(
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
-        _make_spooler(app_config, tmp_spool_path).write("has newline\n")
-        content = tmp_spool_path.read_text(encoding="utf-8")
+        _make_spooler(app_config, tmp_spool_path).write(b"has newline\n")
+        content = tmp_spool_path.read_bytes()
         # Exactly one trailing newline, not two.
-        assert not content.endswith("\n\n")
+        assert not content.endswith(b"\n\n")
 
     def test_email_content_with_special_characters_preserved(
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
-        email = "Subject: Disk > 90%\n\n<b>Alert</b> & warning"
+        email = b"Subject: Disk > 90%\n\n<b>Alert</b> & warning"
         _make_spooler(app_config, tmp_spool_path).write(email)
-        content = tmp_spool_path.read_text(encoding="utf-8")
-        assert "<b>Alert</b>" in content
-        assert "Disk > 90%" in content
+        content = tmp_spool_path.read_bytes()
+        assert b"<b>Alert</b>" in content
+        assert b"Disk > 90%" in content
+
+    def test_every_byte_value_is_written_unchanged(
+        self, tmp_spool_path: Path, app_config: AppConfig
+    ):
+        email = b"Subject: Binary\n\n" + bytes(range(256)) + b"\n"
+        _make_spooler(app_config, tmp_spool_path).write(email)
+        assert tmp_spool_path.read_bytes().endswith(email)
 
 
 # --------------------------------------------------------------------------
@@ -200,7 +208,7 @@ class TestMailSpoolerFilePermissions:
     def test_spool_file_has_0600_permissions_after_first_write(
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
-        _make_spooler(app_config, tmp_spool_path).write("first write")
+        _make_spooler(app_config, tmp_spool_path).write(b"first write")
         mode = stat.S_IMODE(tmp_spool_path.stat().st_mode)
         # os.fchmod enforces 0600 on the open fd, overriding the process umask.
         assert mode == 0o600
@@ -210,10 +218,10 @@ class TestMailSpoolerFilePermissions:
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
         spooler = _make_spooler(app_config, tmp_spool_path)
-        spooler.write("first write")
+        spooler.write(b"first write")
         # Manually loosen the permissions to simulate a race or external change.
         tmp_spool_path.chmod(0o644)
-        spooler.write("second write")
+        spooler.write(b"second write")
         mode = stat.S_IMODE(tmp_spool_path.stat().st_mode)
         # fchmod on the open fd must restore 0600 regardless of prior state.
         assert mode == 0o600
@@ -229,21 +237,21 @@ class TestMailSpoolerAppendBehavior:
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
         spooler = _make_spooler(app_config, tmp_spool_path)
-        spooler.write("first email body")
-        spooler.write("second email body")
-        content = tmp_spool_path.read_text(encoding="utf-8")
-        assert "first email body" in content
-        assert "second email body" in content
+        spooler.write(b"first email body")
+        spooler.write(b"second email body")
+        content = tmp_spool_path.read_bytes()
+        assert b"first email body" in content
+        assert b"second email body" in content
 
     def test_two_separator_blocks_present_after_two_writes(
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
         spooler = _make_spooler(app_config, tmp_spool_path)
-        spooler.write("email one")
-        spooler.write("email two")
-        content = tmp_spool_path.read_text(encoding="utf-8")
+        spooler.write(b"email one")
+        spooler.write(b"email two")
+        content = tmp_spool_path.read_bytes()
         # Each write prepends a separator line; count occurrences.
-        separator_count = content.count("-" * 60)
+        separator_count = content.count(b"-" * 60)
         # The separator is written twice per message (above and below timestamp).
         assert separator_count >= 2
 
@@ -251,10 +259,10 @@ class TestMailSpoolerAppendBehavior:
         self, tmp_spool_path: Path, app_config: AppConfig
     ):
         spooler = _make_spooler(app_config, tmp_spool_path)
-        spooler.write("alpha email")
-        spooler.write("beta email")
-        content = tmp_spool_path.read_text(encoding="utf-8")
-        assert content.index("alpha email") < content.index("beta email")
+        spooler.write(b"alpha email")
+        spooler.write(b"beta email")
+        content = tmp_spool_path.read_bytes()
+        assert content.index(b"alpha email") < content.index(b"beta email")
 
 
 # --------------------------------------------------------------------------
@@ -275,7 +283,7 @@ class TestMailSpoolerErrorHandling:
         spooler = _make_spooler(app_config, spool_path)
         try:
             with pytest.raises(SpoolError):
-                spooler.write("email content")
+                spooler.write(b"email content")
         finally:
             locked_dir.chmod(0o755)
 
@@ -293,7 +301,7 @@ class TestMailSpoolerErrorHandling:
         spooler = _make_spooler(app_config, spool_path)
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.spool"):
             try:
-                spooler.write("email content")
+                spooler.write(b"email content")
             except SpoolError:
                 pass
             finally:
@@ -314,7 +322,7 @@ class TestMailSpoolerErrorHandling:
         spooler = _make_spooler(app_config, spool_path)
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.spool"):
             try:
-                spooler.write("email content")
+                spooler.write(b"email content")
             except SpoolError:
                 pass
             finally:
@@ -333,7 +341,7 @@ class TestMailSpoolerErrorHandling:
         spooler = _make_spooler(app_config, spool_path)
         try:
             with pytest.raises(SpoolError) as exc_info:
-                spooler.write("email content")
+                spooler.write(b"email content")
         finally:
             locked_dir.chmod(0o755)
         # SpoolError must chain the original OSError for debuggability.
@@ -349,14 +357,14 @@ class TestMailSpoolerDisabled:
     def test_write_creates_no_file_or_directory_when_spool_path_is_none(
         self, tmp_path: Path, app_config: AppConfig
     ):
-        _make_spooler(app_config, None).write("email body")
+        _make_spooler(app_config, None).write(b"email body")
         assert not any(tmp_path.iterdir())
 
     def test_write_logs_debug_when_spool_path_is_none(
         self, app_config: AppConfig, caplog: pytest.LogCaptureFixture
     ):
         with caplog.at_level(logging.DEBUG, logger="telegram_sendmail.spool"):
-            _make_spooler(app_config, None).write("email body")
+            _make_spooler(app_config, None).write(b"email body")
         assert any(
             r.levelname == "DEBUG" and "spool_path=None" in r.message
             for r in caplog.records

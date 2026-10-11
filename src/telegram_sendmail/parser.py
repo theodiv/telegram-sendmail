@@ -4,7 +4,7 @@ Email parsing and HTML-to-Telegram conversion for telegram-sendmail.
 Public surface
 --------------
 - `ParsedEmail` — frozen dataclass holding the extracted email fields.
-- `EmailParser` — parses a raw RFC 2822 string into a `ParsedEmail`
+- `EmailParser` — parses a raw RFC 2822 message into a `ParsedEmail`
                   and formats it for the Telegram Bot API.
 
 Internal components
@@ -13,13 +13,14 @@ Internal components
 - `TelegramHTMLParser` — converts safe HTML to Telegram-compatible markup.
 """
 
+import codecs
 import html
 import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from email.message import EmailMessage
-from email.parser import Parser
+from email.feedparser import BytesFeedParser
+from email.message import EmailMessage, MIMEPart
 from email.policy import default as email_default_policy
 from html.parser import HTMLParser
 from typing import Any, Final
@@ -66,6 +67,10 @@ _ATTACHMENT_FOOTER = "\n\n<i>📎 This email contained attachments (not forwarde
 
 # Telegram Bot API hard limit for sendMessage text content.
 _TELEGRAM_MAX_LEN: Final[int] = 4096
+
+# Slice size for feeding the MIME parser. A single parsebytes() call would
+# first decode the whole message into one str, a second full-size copy.
+_FEED_CHUNK: Final[int] = 65_536
 
 
 # --------------------------------------------------------------------------
@@ -305,9 +310,42 @@ def _sanitise_subject(subject: str) -> str:
     return " ".join(subject.split()).strip()
 
 
+def _decode_body(part: MIMEPart) -> str:
+    """
+    Decode the payload of a text MIME part into `str`.
+
+    The declared charset is used when Python has a text codec for it. A
+    missing or ASCII label says nothing about 8-bit bytes: cron stamps
+    the charset of its own locale on output that jobs write as UTF-8.
+    Such a body is decoded as UTF-8, of which ASCII is a subset, and so
+    is a body whose label names no usable codec. Undecodable bytes become
+    U+FFFD instead of raising, so a mislabelled body is delivered degraded
+    rather than dropped.
+    """
+    payload = part.get_payload(decode=True)
+    # The stubs type the payload as a union; a leaf part always holds bytes
+    data = payload if isinstance(payload, bytes) else b""
+    charset = part.get_content_charset() or "ascii"
+
+    try:
+        if codecs.lookup(charset).name != "ascii":
+            return data.decode(charset, errors="replace")
+    except (LookupError, ValueError):
+        logger.warning(
+            "Message body declares unusable charset %r; decoding as UTF-8", charset
+        )
+
+    return data.decode("utf-8", errors="replace")
+
+
 class EmailParser:
     """
-    Parses a raw RFC 2822 email string and produces a `ParsedEmail`.
+    Parses a raw RFC 2822 message and produces a `ParsedEmail`.
+
+    The message is taken as `bytes` so that each MIME part is decoded
+    with the charset it declares. Input decoded beforehand with the
+    process locale garbles 8-bit bodies and cannot represent mail in any
+    other encoding.
 
     Formatting for Telegram (truncation, HTML envelope) is also handled
     here because it requires `config.message_max_len`, which is a
@@ -316,7 +354,7 @@ class EmailParser:
     Usage::
 
         parser = EmailParser(config)
-        parsed = parser.parse(raw_email_string)
+        parsed = parser.parse(raw_email)
         telegram_text = parser.format_for_telegram(parsed)
     """
 
@@ -325,7 +363,7 @@ class EmailParser:
 
     def parse(
         self,
-        raw_email: str,
+        raw_email: bytes,
         sender_override: str | None = None,
         subject_override: str | None = None,
     ) -> ParsedEmail:
@@ -333,7 +371,7 @@ class EmailParser:
         Parse `raw_email` and return a `ParsedEmail` dataclass.
 
         Args:
-            raw_email:        Raw RFC 2822 email content.
+            raw_email:        Raw RFC 2822 email bytes.
             sender_override:  Replaces the `From` header value.
             subject_override: Replaces the `Subject` header value.
 
@@ -345,8 +383,10 @@ class EmailParser:
             raise ParsingError("Received empty email input; nothing to parse.")
 
         try:
-            parser = Parser(EmailMessage, policy=email_default_policy)
-            msg: EmailMessage = parser.parsestr(raw_email)
+            feeder = BytesFeedParser(EmailMessage, policy=email_default_policy)
+            for start in range(0, len(raw_email), _FEED_CHUNK):
+                feeder.feed(raw_email[start : start + _FEED_CHUNK])
+            msg: EmailMessage = feeder.close()
         except Exception as exc:
             raise ParsingError(f"Failed to parse email MIME structure: {exc}") from exc
 
@@ -388,7 +428,7 @@ class EmailParser:
                 return ""
 
             is_html = body_part.get_content_type() == "text/html"
-            raw_content: str = body_part.get_content()
+            raw_content = _decode_body(body_part)
 
             if is_html:
                 safe_html = _sanitise_html(raw_content)

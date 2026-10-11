@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of being ignored when the message already has one. The value is no longer
   written into the message, so the spool file keeps the email as received
   and a line break in the value cannot cut off the remaining headers.
+- Decode 8-bit email bodies with the charset they declare instead of the
+  process locale, and deliver and spool mail that is not valid UTF-8 instead
+  of dropping it. ([#69](https://github.com/theodiv/telegram-sendmail/issues/69))
 
 ## [1.3.1] - 2026-10-09
 

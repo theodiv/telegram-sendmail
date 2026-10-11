@@ -13,7 +13,7 @@ strictly over the process's `stdin`/`stdout` file descriptors.
 
 The server is deliberately ignorant of Telegram, parsing, and spooling.
 It fires a caller-supplied `on_message` callback with the raw email
-string and the envelope sender. Keeping delivery logic outside this
+bytes and the envelope sender. Keeping delivery logic outside this
 module means the state machine can be unit-tested without any network
 or filesystem dependencies.
 
@@ -46,9 +46,9 @@ logger = logging.getLogger(__name__)
 _MAX_MESSAGE_SIZE: int = 10_485_760  # 10 MiB, advertised via EHLO SIZE extension
 
 # Pushed into line_queue by signal handlers to trigger graceful shutdown.
-# The \x00 prefix cannot arrive from stdin in text mode, preventing
-# collision with any real SMTP command line.
-_SHUTDOWN_SENTINEL: Final = "\x00__SIGNAL_SHUTDOWN__"
+# The event loop matches it by identity, so no line read from stdin can
+# be mistaken for it, whatever bytes that line holds.
+_SHUTDOWN_SENTINEL: Final = b"\x00__SIGNAL_SHUTDOWN__"
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +120,7 @@ class _SessionState:
 
     state: _State = _State.CONNECTED
     envelope_sender: str | None = None
-    message_buffer: list[str] = field(default_factory=list)
+    message_buffer: list[bytes] = field(default_factory=list)
     buffer_size: int = 0
     oversized: bool = False
 
@@ -147,8 +147,13 @@ class SMTPServer:
 
     The `on_message` callable is invoked once per successfully received
     message (after the `DATA` terminator `.` is seen). It receives
-    the raw RFC 2822 email string and the envelope sender address (which
+    the raw RFC 2822 email bytes and the envelope sender address (which
     may be `None` if `MAIL FROM` contained an empty reverse-path).
+
+    Message data stays `bytes` from `stdin` to the callback, so 8-bit
+    content in any charset arrives unchanged and a byte the process
+    locale cannot decode never ends the session. Only command lines are
+    decoded, as UTF-8 with replacement characters.
 
     If `on_message` raises any exception, a `554 Transaction failed`
     response is returned to the client and the session resets — the SMTP
@@ -162,13 +167,13 @@ class SMTPServer:
     Args:
         config:     Resolved `AppConfig` (only `smtp_timeout` is used).
         on_message: Callable with signature
-                    `(raw_email: str, envelope_sender: str | None) -> None`.
+                    `(raw_email: bytes, envelope_sender: str | None) -> None`.
     """
 
     def __init__(
         self,
         config: AppConfig,
-        on_message: Callable[[str, str | None], None],
+        on_message: Callable[[bytes, str | None], None],
     ) -> None:
         self._timeout: int = config.smtp_timeout
         self._on_message = on_message
@@ -190,7 +195,7 @@ class SMTPServer:
                                `stdout` that prevents sending any further
                                responses.
         """
-        line_queue: queue.Queue[str | None] = queue.Queue()
+        line_queue: queue.Queue[bytes | None] = queue.Queue()
         reader = threading.Thread(
             target=self._stdin_reader,
             args=(line_queue,),
@@ -233,7 +238,7 @@ class SMTPServer:
     def _event_loop(
         self,
         session: _SessionState,
-        line_queue: queue.Queue[str | None],
+        line_queue: queue.Queue[bytes | None],
     ) -> None:
         """Drive the SMTP state machine until the session ends."""
         while True:
@@ -253,12 +258,13 @@ class SMTPServer:
                 self._write(_SMTP.SHUTDOWN)
                 return
 
-            line = line.rstrip("\r\n")
+            line = line.rstrip(b"\r\n")
 
             if session.state is _State.DATA:
                 self._handle_data_line(line, session)
             else:
-                done = self._handle_command(line, session)
+                command = line.decode("utf-8", errors="replace")
+                done = self._handle_command(command, session)
                 if done:
                     return
 
@@ -266,9 +272,9 @@ class SMTPServer:
     # DATA mode
     # ------------------------------------------------------------------
 
-    def _handle_data_line(self, line: str, session: _SessionState) -> None:
+    def _handle_data_line(self, line: bytes, session: _SessionState) -> None:
         """Process one line received while in DATA collection mode."""
-        if line == ".":
+        if line == b".":
             if session.oversized:
                 self._write(_SMTP.MSG_TOO_BIG)
                 logger.warning(
@@ -282,7 +288,7 @@ class SMTPServer:
                 self._finalise_message(session)
         elif not session.oversized:
             # RFC 5321 §4.5.2 dot-stuffing: a leading '..' is an escaped '.'
-            cleaned = line[1:] if line.startswith("..") else line
+            cleaned = line[1:] if line.startswith(b"..") else line
             # +1 accounts for the '\n' separator used when joining the buffer
             increment = len(cleaned) + (1 if session.message_buffer else 0)
             if session.buffer_size + increment > _MAX_MESSAGE_SIZE:
@@ -294,7 +300,7 @@ class SMTPServer:
 
     def _finalise_message(self, session: _SessionState) -> None:
         """Invoke `on_message` and reset session state after `DATA` ends."""
-        raw_email = "\n".join(session.message_buffer)
+        raw_email = b"\n".join(session.message_buffer)
         envelope_sender = session.envelope_sender
 
         try:
@@ -419,15 +425,15 @@ class SMTPServer:
         return None
 
     @staticmethod
-    def _stdin_reader(q: queue.Queue[str | None]) -> None:
+    def _stdin_reader(q: queue.Queue[bytes | None]) -> None:
         """
-        Read lines from `stdin` into `q` in a background thread.
+        Read raw lines from `stdin` into `q` in a background thread.
 
         Pushes `None` as a sentinel when EOF is reached or if the read
         raises an unexpected exception.
         """
         try:
-            for line in iter(sys.stdin.readline, ""):
+            for line in iter(sys.stdin.buffer.readline, b""):
                 q.put(line)
         except Exception as exc:
             logger.warning("SMTP stdin reader encountered an error: %s", exc)

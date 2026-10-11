@@ -28,7 +28,7 @@ Coverage targets
     - The DATA command results in a "354" invitation response
     - A "250 2.0.0 Ok" response is sent after the "." terminator is received
     - The on_message callback is invoked after the "." terminator is received
-    - The callback receives the correct raw_email string (lines joined by "\n")
+    - The callback receives the correct raw_email bytes (lines joined by "\n")
     - The callback receives the envelope sender extracted from MAIL FROM
     - A dot-stuffed ".." line is un-stuffed to "." in the delivered message
     - A line beginning with ".." followed by more text is un-stuffed correctly
@@ -64,19 +64,29 @@ Coverage targets
     - A second complete message can be delivered in the same session after RSET
     - Two complete messages can be delivered in a single session without an intervening RSET
 
+`SMTPServer` — 8-bit input
+    - 8-bit DATA lines reach the on_message callback byte for byte
+    - An undecodable byte in a command line does not end the session
+    - A UTF-8 envelope sender is decoded as such; an undecodable byte in it becomes U+FFFD
+    - The 10 MiB limit counts bytes, not characters
+
 `SMTPServer` — signal-triggered graceful shutdown
     - SIGTERM, SIGINT and shutdown sentinel produce a "421" shutdown response
     - Signal handlers are restored to their original values after a QUIT or session crash
+    - An unterminated stdin line equal to the shutdown sentinel does not shut the session down
 
 Design notes
 ------------
 - All integration tests use the `_run_session` module-level helper, which
-  monkeypatches sys.stdin and sys.stdout with io.StringIO objects and calls
-  server.run(). This approach exercises the full threading pipeline (the
-  background _stdin_reader thread + the event loop) without any real I/O.
+  monkeypatches sys.stdin with a bytes-backed text wrapper and sys.stdout with
+  io.StringIO, then calls server.run(). This approach exercises the full
+  threading pipeline (the background _stdin_reader thread + the event loop)
+  without any real I/O.
+- The stdin wrapper decodes as strict ASCII, so a text-mode read of an 8-bit
+  line would raise; the bytes reach the server only through sys.stdin.buffer.
 - sys.stdout.reconfigure is called inside run(); StringIO lacks this method
   but the production code catches AttributeError, so no patching is required.
-- The app_config fixture has smtp_timeout=5. Because StringIO input is
+- The app_config fixture has smtp_timeout=5. Because the in-memory input is
   exhausted nearly instantly, the event loop never waits anywhere near the
   timeout threshold, keeping all tests fast.
 - Both real-signal and sentinel tests (`_shutdown_reader`) exist because
@@ -92,7 +102,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 import pytest
@@ -108,12 +118,15 @@ from telegram_sendmail.smtp import _SHUTDOWN_SENTINEL, SMTPServer
 
 def _run_session(
     server: SMTPServer,
-    commands: list[str],
+    commands: Sequence[str | bytes],
     monkeypatch: pytest.MonkeyPatch,
 ) -> str:
     """Run a full SMTP session and return every byte written to stdout."""
-    stdin_data = "\r\n".join(commands) + "\r\n"
-    monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_data))
+    lines = [c.encode("ascii") if isinstance(c, str) else c for c in commands]
+    stdin = io.TextIOWrapper(
+        io.BytesIO(b"\r\n".join(lines) + b"\r\n"), encoding="ascii"
+    )
+    monkeypatch.setattr(sys, "stdin", stdin)
     monkeypatch.setattr(sys, "stdout", io.StringIO())
     server.run()
     return sys.stdout.getvalue()
@@ -125,14 +138,14 @@ def _response_lines(output: str) -> list[str]:
 
 
 def _commands(
-    *body_lines: str,
+    *body_lines: str | bytes,
     ehlo: Literal["EHLO", "HELO"] | None = "EHLO",
     send: str | None = "sender@example.com",
     rcpt: str | None = "recipient@example.com",
     envp: bool = True,  # False to skip envelope; ignores "MAIL FROM" and "RCPT TO"
     quit: bool = True,
     tail: str | tuple[str, ...] = (),
-) -> list[str]:
+) -> list[str | bytes]:
     """Build a partial or complete SMTP command sequence."""
     return [
         *([f"{ehlo} Test"] if ehlo else []),
@@ -317,7 +330,7 @@ class TestSMTPDataCollection:
         _run_session(server, commands, monkeypatch)
         raw_email = smtp_callback.call_args.args[0]
         # Lines are joined with "\n" by the session state machine.
-        assert raw_email == "Subject: Test\n\nHello world"
+        assert raw_email == b"Subject: Test\n\nHello world"
 
     def test_callback_receives_envelope_sender_from_mail_from(
         self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
@@ -336,7 +349,7 @@ class TestSMTPDataCollection:
         commands = _commands("DATA", "..", ".")
         _run_session(server, commands, monkeypatch)
         raw_email = smtp_callback.call_args.args[0]
-        assert raw_email == "."
+        assert raw_email == b"."
 
     def test_dot_stuffed_line_with_text_restored_correctly(
         self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
@@ -346,7 +359,7 @@ class TestSMTPDataCollection:
         commands = _commands("DATA", "..hello world", ".")
         _run_session(server, commands, monkeypatch)
         raw_email = smtp_callback.call_args.args[0]
-        assert raw_email == ".hello world"
+        assert raw_email == b".hello world"
 
     def test_ordinary_data_lines_passed_through_unchanged(
         self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
@@ -357,9 +370,9 @@ class TestSMTPDataCollection:
         )
         _run_session(server, commands, monkeypatch)
         raw_email = smtp_callback.call_args.args[0]
-        assert "Line one" in raw_email
-        assert "Line two" in raw_email
-        assert "X-Custom: header" in raw_email
+        assert b"Line one" in raw_email
+        assert b"Line two" in raw_email
+        assert b"X-Custom: header" in raw_email
 
 
 # --------------------------------------------------------------------------
@@ -460,7 +473,7 @@ class TestSMTPDataSizeLimit:
         output = _run_session(server, commands, monkeypatch)
         assert "552 5.3.4" in output
         smtp_callback.assert_called_once()
-        assert smtp_callback.call_args.args[0] == "small body"
+        assert smtp_callback.call_args.args[0] == b"small body"
 
     def test_message_just_under_limit_accepted(
         self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
@@ -627,8 +640,67 @@ class TestSMTPSessionReset:
         assert smtp_callback.call_count == 2
         first_raw = smtp_callback.call_args_list[0].args[0]
         second_raw = smtp_callback.call_args_list[1].args[0]
-        assert "first message" in first_raw
-        assert "second message" in second_raw
+        assert b"first message" in first_raw
+        assert b"second message" in second_raw
+
+
+# --------------------------------------------------------------------------
+# 8-bit input
+# --------------------------------------------------------------------------
+
+
+class TestSMTPEightBitInput:
+    def test_eight_bit_data_lines_reach_callback_unchanged(
+        self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        commands = _commands(
+            "DATA", "Subject: Test", "", b"Temp\xe9rature \xff\x00", "."
+        )
+        output = _run_session(server, commands, monkeypatch)
+        assert "250 2.0.0 Ok: queued as" in output
+        raw_email = smtp_callback.call_args.args[0]
+        assert raw_email == b"Subject: Test\n\nTemp\xe9rature \xff\x00"
+
+    def test_undecodable_byte_in_command_line_does_not_end_session(
+        self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        commands = _commands(b"NOOP \xff\xfe", "DATA", "body", ".")
+        output = _run_session(server, commands, monkeypatch)
+        assert "250 2.0.0 Ok: queued as" in output
+        assert "221 2.0.0 Bye" in output
+
+    @pytest.mark.parametrize(
+        ("address", "expected"),
+        [("josé@host".encode(), "josé@host"), (b"jos\xe9@host", "jos\ufffd@host")],
+        ids=["utf-8", "invalid-byte"],
+    )
+    def test_eight_bit_envelope_sender_is_decoded_as_utf8_with_replacement(
+        self,
+        address: bytes,
+        expected: str,
+        app_config: AppConfig,
+        smtp_callback: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        commands = _commands(
+            b"MAIL FROM:<" + address + b">", "DATA", "body", ".", send=None
+        )
+        _run_session(server, commands, monkeypatch)
+        assert smtp_callback.call_args.args[1] == expected
+
+    def test_size_limit_counts_bytes_not_characters(
+        self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        server = SMTPServer(app_config, on_message=smtp_callback)
+        # 11 lines of 512 Ki two-byte characters: 5.5 Mi characters but 11 MiB.
+        line = "é".encode() * (512 * 1024)
+        commands = _commands("DATA", *([line] * 11), ".")
+        output = _run_session(server, commands, monkeypatch)
+        assert "552 5.3.4" in output
+        smtp_callback.assert_not_called()
 
 
 # --------------------------------------------------------------------------
@@ -642,7 +714,7 @@ class TestSMTPSignalShutdown:
         """Return a _stdin_reader that sends a shutdown signal or sentinel after EHLO."""
 
         def _reader(q: Any) -> None:
-            q.put("EHLO Test\r\n")
+            q.put(b"EHLO Test\r\n")
             if signum is not None:
                 time.sleep(0.05)
                 os.kill(os.getpid(), signum)
@@ -708,3 +780,15 @@ class TestSMTPSignalShutdown:
         _run_session(server, _commands("DATA", "body", "."), monkeypatch)
         assert signal.getsignal(signal.SIGTERM) is prev_term
         assert signal.getsignal(signal.SIGINT) is prev_int
+
+    def test_stdin_line_equal_to_sentinel_is_not_a_shutdown(
+        self, app_config: AppConfig, smtp_callback: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        # An unterminated last line is read with no line ending, so its bytes
+        # equal the sentinel and only the object identity tells them apart.
+        stdin_data = b"EHLO Test\r\n" + _SHUTDOWN_SENTINEL
+        stdin = io.TextIOWrapper(io.BytesIO(stdin_data), encoding="ascii")
+        monkeypatch.setattr(sys, "stdin", stdin)
+        monkeypatch.setattr(sys, "stdout", io.StringIO())
+        SMTPServer(app_config, on_message=smtp_callback).run()
+        assert "Service shutting down" not in sys.stdout.getvalue()

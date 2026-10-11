@@ -10,11 +10,13 @@ Configuration
   `patched_config_loader`      — patches `ConfigLoader.load()`; returns `app_config` (no file I/O)
 
 Email corpus
-  `plain_raw_email`            — minimal plain-text RFC 2822 email string
+  `plain_raw_email`            — minimal plain-text RFC 2822 email as bytes
   `html_raw_email`             — HTML email with both safe and dangerous markup
   `multipart_raw_email`        — multipart/mixed email with one attachment
-  `empty_raw_email`            — whitespace-only string (triggers `ParsingError`)
+  `empty_raw_email`            — whitespace-only bytes (triggers `ParsingError`)
   `encoded_subject_email`      — email with a multi-word, whitespace-heavy subject
+  `utf8_raw_email`             — UTF-8 email with an 8-bit body (Latin-1, BMP, astral characters)
+  `latin1_raw_email`           — ISO-8859-1 email with an 8-bit body (not valid UTF-8)
 
 Telegram API mocking
   `mock_telegram_ok`           — `requests_mock`: POST `/sendMessage` -> 200 `ok: true`
@@ -33,8 +35,8 @@ Filesystem
 
 Design notes
 ------------
-- All email fixtures are plain strings, not `email.message.Message` objects,
-  because every public entry point in the package takes the raw string form.
+- All email fixtures are `bytes`, not `email.message.Message` objects,
+  because every public entry point in the package takes the raw message bytes.
 - `app_config` uses `tmp_path` for `spool_path` so no test ever touches
   a real filesystem path like `/var/mail`.
 - Telegram API fixtures use `requests_mock` (via the `requests-mock` library)
@@ -166,7 +168,7 @@ def patched_config_loader(
 
 
 @pytest.fixture
-def plain_raw_email() -> str:
+def plain_raw_email() -> bytes:
     """
     Minimal well-formed plain-text RFC 2822 email.
 
@@ -183,11 +185,11 @@ def plain_raw_email() -> str:
         Backup completed successfully.
         Duration: 4m 32s
         Files archived: 1,024
-    """)
+    """).encode()
 
 
 @pytest.fixture
-def html_raw_email() -> str:
+def html_raw_email() -> bytes:
     """
     HTML email containing both safe markup and dangerous elements.
 
@@ -227,11 +229,11 @@ def html_raw_email() -> str:
         <input type="hidden" value="secret">
         <script><script>nested('deeper xss')</script></script>
         </body></html>
-    """)
+    """).encode()
 
 
 @pytest.fixture
-def multipart_raw_email() -> str:
+def multipart_raw_email() -> bytes:
     """
     Multipart/mixed email with a plain-text body and one binary attachment.
 
@@ -260,21 +262,21 @@ def multipart_raw_email() -> str:
 
         dGVzdGRhdGE=
         --==boundary==--
-    """)
+    """).encode()
 
 
 @pytest.fixture
-def empty_raw_email() -> str:
+def empty_raw_email() -> bytes:
     """
-    Whitespace-only string that must raise `ParsingError`.
+    Whitespace-only bytes that must raise `ParsingError`.
 
     Covers the empty-input guard in `EmailParser.parse()`.
     """
-    return "   \n\t\n   "
+    return b"   \n\t\n   "
 
 
 @pytest.fixture
-def encoded_subject_email() -> str:
+def encoded_subject_email() -> bytes:
     """
     Email with a subject containing leading/trailing whitespace and internal
     newlines, as produced by some system daemons that fold long headers.
@@ -288,7 +290,45 @@ def encoded_subject_email() -> str:
         Content-Type: text/plain
 
         Disk at 95 percent.
-    """)
+    """).encode()
+
+
+@pytest.fixture
+def utf8_raw_email() -> bytes:
+    """
+    Plain-text email whose UTF-8 body is sent as 8-bit content.
+
+    Covers: charset-aware decoding of Latin-1-range, BMP, and astral
+    characters in one body.
+    """
+    return (
+        "From: cron@hostname.local\n"
+        "Subject: Sauvegarde\n"
+        "MIME-Version: 1.0\n"
+        "Content-Type: text/plain; charset=utf-8\n"
+        "Content-Transfer-Encoding: 8bit\n"
+        "\n"
+        "Température 25°C — coût €100 📬\n"
+    ).encode()
+
+
+@pytest.fixture
+def latin1_raw_email() -> bytes:
+    """
+    Plain-text email whose ISO-8859-1 body is sent as 8-bit content.
+
+    Covers: a message that is not valid UTF-8, decoded with the charset it
+    declares and archived byte for byte.
+    """
+    return (
+        "From: cron@hostname.local\n"
+        "Subject: Rapport\n"
+        "MIME-Version: 1.0\n"
+        "Content-Type: text/plain; charset=iso-8859-1\n"
+        "Content-Transfer-Encoding: 8bit\n"
+        "\n"
+        "Température à 25°C\n"
+    ).encode("iso-8859-1")
 
 
 # --------------------------------------------------------------------------

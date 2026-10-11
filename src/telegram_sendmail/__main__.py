@@ -75,7 +75,7 @@ _PROBE_MESSAGE: str = (
 
 
 def _deliver(
-    raw_email: str,
+    raw_email: bytes,
     sender_override: str | None,
     subject_override: str | None,
     config: AppConfig,
@@ -93,12 +93,16 @@ def _deliver(
     4. **Format** — wrap in the Telegram message envelope with truncation.
     5. **Send**   — deliver via the Telegram Bot API.
 
+    The email stays `bytes` until the parser decodes it. Its MIME parts
+    declare their own charsets, so the locale of the calling process must
+    not decide how it is read or archived.
+
     Overrides replace the parsed fields and are never written into
     `raw_email`, so the spool archives the message unmodified and an
     override value cannot alter its header section.
 
     Args:
-        raw_email:        Raw RFC 2822 email string.
+        raw_email:        Raw RFC 2822 email bytes.
         sender_override:  Envelope sender from `-f`/`-r` flag or SMTP
                           `MAIL FROM`. Overrides the `From` header.
         subject_override: Subject from `-s` flag. Overrides the `Subject`
@@ -164,13 +168,13 @@ def _is_suppressed(parsed: ParsedEmail, config: AppConfig) -> bool:
     return False
 
 
-def _make_smtp_handler(config: AppConfig) -> Callable[[str, str | None], None]:
+def _make_smtp_handler(config: AppConfig) -> Callable[[bytes, str | None], None]:
     """
     Return a closure that binds `config` to `_deliver` for use as the
     `SMTPServer.on_message` callback.
     """
 
-    def handler(raw_email: str, envelope_sender: str | None) -> None:
+    def handler(raw_email: bytes, envelope_sender: str | None) -> None:
         # One -s value would overwrite the Subject of every message in the
         # session, so SMTP mode passes no subject override.
         _deliver(raw_email, envelope_sender, None, config)
@@ -178,26 +182,26 @@ def _make_smtp_handler(config: AppConfig) -> Callable[[str, str | None], None]:
     return handler
 
 
-def _bounded_stdin_read() -> str:
+def _bounded_stdin_read() -> bytes:
     """
-    Read up to `_MAX_PIPE_SIZE` characters from `sys.stdin` in chunks.
+    Read up to `_MAX_PIPE_SIZE` bytes from `sys.stdin.buffer` in chunks.
 
-    Reading in fixed-size chunks prevents a single `sys.stdin.read()` call
-    from loading an arbitrarily large payload into memory before any
+    Reading in fixed-size chunks prevents a single `read()` call from
+    loading an arbitrarily large payload into memory before any
     downstream truncation occurs. Once the accumulated size exceeds
     `_MAX_PIPE_SIZE`, the overflow is drained without buffering and a
     `WARNING` is emitted so syslog records the event; delivery continues
     with the collected portion.
 
     Returns:
-        The email content, at most `_MAX_PIPE_SIZE` characters long.
+        The email content, at most `_MAX_PIPE_SIZE` bytes long.
     """
-    chunks: list[str] = []
+    chunks: list[bytes] = []
     total = 0
     oversized = False
 
     while True:
-        chunk = sys.stdin.read(_PIPE_READ_CHUNK)
+        chunk = sys.stdin.buffer.read(_PIPE_READ_CHUNK)
         if not chunk:
             break
 
@@ -219,7 +223,7 @@ def _bounded_stdin_read() -> str:
             _MAX_PIPE_SIZE,
         )
 
-    return "".join(chunks)
+    return b"".join(chunks)
 
 
 # --------------------------------------------------------------------------

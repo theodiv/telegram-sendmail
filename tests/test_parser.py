@@ -32,12 +32,22 @@ Coverage targets
     - Sets has_attachments=True for multipart/mixed emails containing a binary attachment
     - Sets has_attachments=False for plain single-part emails
     - Logs attachment count at INFO level when attachments are detected
+    - Decodes raw UTF-8 bytes in the From and Subject headers
+    - Keeps a multibyte character intact when it spans the parser feed chunk boundary
 
-`EmailParser._extract_body`
+`EmailParser._extract_body` — MIME part selection and conversion
     - Extracts body from the text/plain part of a multipart/mixed email
     - Falls back to HTML conversion when the email is text/html with no plain part
     - Returns an empty string when no inline body part is present (attachment-only MIME)
     - HTML-escapes angle brackets and ampersands in plain-text bodies
+
+`EmailParser._extract_body` — charset decoding
+    - Decodes an 8-bit UTF-8 body intact, astral characters included, in plain-text and HTML parts
+    - Decodes an 8-bit body with the legacy charset it declares
+    - Decodes base64 and quoted-printable bodies with their declared charset
+    - Decodes an 8-bit body as UTF-8, with no WARNING, when the charset label is missing or ASCII
+    - Decodes as UTF-8 and logs a WARNING naming the label when the charset is unknown or unusable
+    - Replaces undecodable bytes with U+FFFD for a missing or a declared charset instead of raising
 
 `EmailParser.format_for_telegram`
     - Does not truncate a body whose length is exactly at the configured limit
@@ -60,17 +70,22 @@ Design notes
 - The `test_returns_empty_string_when_no_inline_body_part` test uses an attachment-only
   multipart email to reach the `body_part is None` branch in `_extract_body`; a
   plain email with an empty body would still have a text/plain part.
+- Charset tests go through `EmailParser.parse` instead of calling `_decode_body` with a
+  hand-built part: the result depends on the MIME parser handing over the original bytes,
+  which only a parse from `bytes` proves.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import logging
 
 import pytest
 
 from telegram_sendmail.config import AppConfig
 from telegram_sendmail.exceptions import ParsingError
 from telegram_sendmail.parser import (
+    _FEED_CHUNK,
     EmailParser,
     ParsedEmail,
     _sanitise_html,
@@ -95,6 +110,11 @@ def _make_parsed(
         body=body,
         has_attachments=has_attachments,
     )
+
+
+def _text_email(body: bytes, headers: bytes = b"") -> bytes:
+    """Return a minimal email with extra header lines and the given body bytes."""
+    return b"From: x\nSubject: s\n" + headers + b"\n" + body
 
 
 # --------------------------------------------------------------------------
@@ -268,44 +288,44 @@ class TestHTMLSanitizerDangerousTags:
 
 class TestHTMLSanitizerFullPipeline:
     def test_html_email_strips_script_content(
-        self, html_raw_email: str, app_config: AppConfig
+        self, html_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(html_raw_email)
         assert "xss attempt" not in parsed.body
         assert "nested" not in parsed.body
 
     def test_html_email_strips_style_content(
-        self, html_raw_email: str, app_config: AppConfig
+        self, html_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(html_raw_email)
         assert "display: none" not in parsed.body
 
     def test_html_email_strips_iframe_fallback_text(
-        self, html_raw_email: str, app_config: AppConfig
+        self, html_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(html_raw_email)
         assert "fallback" not in parsed.body
 
     def test_html_email_preserves_heading_content(
-        self, html_raw_email: str, app_config: AppConfig
+        self, html_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(html_raw_email)
         assert "CRITICAL" in parsed.body
 
     def test_html_email_preserves_safe_anchor_href(
-        self, html_raw_email: str, app_config: AppConfig
+        self, html_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(html_raw_email)
         assert "grafana.example.com" in parsed.body
 
     def test_html_email_discards_javascript_href(
-        self, html_raw_email: str, app_config: AppConfig
+        self, html_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(html_raw_email)
         assert "javascript:" not in parsed.body
 
     def test_anchor_in_block_element_emits_paired_tags(
-        self, html_raw_email: str, app_config: AppConfig
+        self, html_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(html_raw_email)
         assert parsed.body.count("<a ") == parsed.body.count("</a>")
@@ -318,17 +338,17 @@ class TestHTMLSanitizerFullPipeline:
 
 class TestSanitiseSubject:
     def test_collapses_internal_whitespace_runs(self, app_config: AppConfig):
-        raw = "From: x\nSubject: one   two   three\n\nbody"
+        raw = b"From: x\nSubject: one   two   three\n\nbody"
         parsed = EmailParser(app_config).parse(raw)
         assert parsed.subject == "one two three"
 
     def test_strips_leading_and_trailing_whitespace(self, app_config: AppConfig):
-        raw = "From: x\nSubject:    padded   \n\nbody"
+        raw = b"From: x\nSubject:    padded   \n\nbody"
         parsed = EmailParser(app_config).parse(raw)
         assert parsed.subject == "padded"
 
     def test_folded_header_collapses_to_single_space(
-        self, encoded_subject_email: str, app_config: AppConfig
+        self, encoded_subject_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(encoded_subject_email)
         # RFC 2822 folded headers include embedded newlines; all whitespace runs collapse.
@@ -337,7 +357,7 @@ class TestSanitiseSubject:
         assert len(parsed.subject) > 0
 
     def test_override_line_breaks_collapse_to_single_space(
-        self, plain_raw_email: str, app_config: AppConfig
+        self, plain_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(
             plain_raw_email, subject_override="Alert\r\nX-Injected: 1\n\nbody"
@@ -352,25 +372,25 @@ class TestSanitiseSubject:
 
 class TestEmailParserParse:
     def test_raises_parsing_error_on_empty_input(
-        self, empty_raw_email: str, app_config: AppConfig
+        self, empty_raw_email: bytes, app_config: AppConfig
     ):
         with pytest.raises(ParsingError, match="empty"):
             EmailParser(app_config).parse(empty_raw_email)
 
     def test_extracts_sender_from_from_header(
-        self, plain_raw_email: str, app_config: AppConfig
+        self, plain_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(plain_raw_email)
         assert "cron@hostname.local" in parsed.sender
 
     def test_extracts_subject_from_subject_header(
-        self, plain_raw_email: str, app_config: AppConfig
+        self, plain_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(plain_raw_email)
         assert parsed.subject == "Daily Backup Complete"
 
     def test_sender_override_supersedes_from_header(
-        self, plain_raw_email: str, app_config: AppConfig
+        self, plain_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(
             plain_raw_email, sender_override="override@example.com"
@@ -379,7 +399,7 @@ class TestEmailParserParse:
         assert "cron@hostname.local" not in parsed.sender
 
     def test_subject_override_supersedes_subject_header(
-        self, plain_raw_email: str, app_config: AppConfig
+        self, plain_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(
             plain_raw_email, subject_override="Disk Alert"
@@ -387,40 +407,54 @@ class TestEmailParserParse:
         assert parsed.subject == "Disk Alert"
 
     def test_empty_subject_override_keeps_subject_header(
-        self, plain_raw_email: str, app_config: AppConfig
+        self, plain_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(plain_raw_email, subject_override="")
         assert parsed.subject == "Daily Backup Complete"
 
     def test_plain_email_has_no_attachments(
-        self, plain_raw_email: str, app_config: AppConfig
+        self, plain_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(plain_raw_email)
         assert parsed.has_attachments is False
 
     def test_multipart_email_sets_has_attachments_true(
-        self, multipart_raw_email: str, app_config: AppConfig
+        self, multipart_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(multipart_raw_email)
         assert parsed.has_attachments is True
 
     def test_attachment_detection_logged_at_info(
         self,
-        multipart_raw_email: str,
+        multipart_raw_email: bytes,
         app_config: AppConfig,
         caplog: pytest.LogCaptureFixture,
     ):
-        import logging
-
         with caplog.at_level(logging.INFO, logger="telegram_sendmail.parser"):
             EmailParser(app_config).parse(multipart_raw_email)
         assert any("attachment" in r.message.lower() for r in caplog.records)
 
     def test_body_contains_plain_text_content(
-        self, plain_raw_email: str, app_config: AppConfig
+        self, plain_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(plain_raw_email)
         assert "Backup completed successfully" in parsed.body
+
+    def test_raw_utf8_header_bytes_are_decoded(self, app_config: AppConfig):
+        raw = "From: José <jose@host>\nSubject: Sauvegarde terminée\n\nbody".encode()
+        parsed = EmailParser(app_config).parse(raw)
+        assert parsed.sender == "José <jose@host>"
+        assert parsed.subject == "Sauvegarde terminée"
+
+    def test_multibyte_character_across_feed_chunk_boundary_is_intact(
+        self, app_config: AppConfig
+    ):
+        headers = b"From: x\nSubject: s\nContent-Type: text/plain; charset=utf-8\n\n"
+        padding = b"a" * (_FEED_CHUNK - len(headers) - 1)
+        raw = headers + padding + "é".encode() + b" end"
+        assert raw[_FEED_CHUNK - 1 : _FEED_CHUNK + 1] == "é".encode()
+        parsed = EmailParser(app_config).parse(raw)
+        assert parsed.body.endswith("aé end")
 
 
 # --------------------------------------------------------------------------
@@ -430,18 +464,18 @@ class TestEmailParserParse:
 
 class TestEmailParserExtractBody:
     def test_plain_body_escapes_angle_brackets(self, app_config: AppConfig):
-        raw = "From: x\nSubject: s\nContent-Type: text/plain\n\n<b>not bold</b>"
+        raw = b"From: x\nSubject: s\nContent-Type: text/plain\n\n<b>not bold</b>"
         parsed = EmailParser(app_config).parse(raw)
         assert "&lt;b&gt;" in parsed.body
         assert "<b>" not in parsed.body
 
     def test_plain_body_escapes_ampersand(self, app_config: AppConfig):
-        raw = "From: x\nSubject: s\nContent-Type: text/plain\n\nA & B"
+        raw = b"From: x\nSubject: s\nContent-Type: text/plain\n\nA & B"
         parsed = EmailParser(app_config).parse(raw)
         assert "&amp;" in parsed.body
 
     def test_multipart_body_contains_plain_text_part(
-        self, multipart_raw_email: str, app_config: AppConfig
+        self, multipart_raw_email: bytes, app_config: AppConfig
     ):
         # multipart/mixed has text/plain as first inline part.
         parsed = EmailParser(app_config).parse(multipart_raw_email)
@@ -451,24 +485,124 @@ class TestEmailParserExtractBody:
         # An attachment-only multipart email has no text/plain or text/html part,
         # so get_body() returns None and _extract_body maps that to "".
         raw = (
-            "From: x\nSubject: s\n"
-            "MIME-Version: 1.0\n"
-            'Content-Type: multipart/mixed; boundary="b"\n\n'
-            "--b\n"
-            "Content-Type: application/octet-stream\n"
-            'Content-Disposition: attachment; filename="data.bin"\n\n'
-            "binarydata\n"
-            "--b--\n"
+            b"From: x\nSubject: s\n"
+            b"MIME-Version: 1.0\n"
+            b'Content-Type: multipart/mixed; boundary="b"\n\n'
+            b"--b\n"
+            b"Content-Type: application/octet-stream\n"
+            b'Content-Disposition: attachment; filename="data.bin"\n\n'
+            b"binarydata\n"
+            b"--b--\n"
         )
         parsed = EmailParser(app_config).parse(raw)
         assert parsed.body == ""
 
     def test_html_email_body_is_non_empty_string(
-        self, html_raw_email: str, app_config: AppConfig
+        self, html_raw_email: bytes, app_config: AppConfig
     ):
         parsed = EmailParser(app_config).parse(html_raw_email)
         assert isinstance(parsed.body, str)
         assert len(parsed.body) > 0
+
+
+# --------------------------------------------------------------------------
+# EmailParser._extract_body — charset decoding
+# --------------------------------------------------------------------------
+
+
+class TestEmailParserCharsetDecoding:
+    def test_utf8_8bit_body_is_decoded_intact(
+        self, utf8_raw_email: bytes, app_config: AppConfig
+    ):
+        parsed = EmailParser(app_config).parse(utf8_raw_email)
+        assert parsed.body == "Température 25°C — coût €100 📬\n"
+
+    def test_declared_legacy_charset_is_honoured(
+        self, latin1_raw_email: bytes, app_config: AppConfig
+    ):
+        parsed = EmailParser(app_config).parse(latin1_raw_email)
+        assert parsed.body == "Température à 25°C\n"
+
+    def test_html_8bit_body_keeps_astral_characters(self, app_config: AppConfig):
+        raw = _text_email(
+            "<p>Température 📬</p>".encode(),
+            b"Content-Type: text/html; charset=utf-8\n",
+        )
+        parsed = EmailParser(app_config).parse(raw)
+        assert parsed.body == "Température 📬"
+
+    @pytest.mark.parametrize(
+        ("headers", "body"),
+        [
+            (
+                b"Content-Type: text/plain; charset=utf-8\n"
+                b"Content-Transfer-Encoding: base64\n",
+                b"VGVtcMOpcmF0dXJl\n",
+            ),
+            (
+                b"Content-Type: text/plain; charset=iso-8859-1\n"
+                b"Content-Transfer-Encoding: quoted-printable\n",
+                b"Temp=E9rature",
+            ),
+        ],
+        ids=["base64-utf-8", "quoted-printable-iso-8859-1"],
+    )
+    def test_transfer_encoded_body_is_decoded_with_declared_charset(
+        self, headers: bytes, body: bytes, app_config: AppConfig
+    ):
+        parsed = EmailParser(app_config).parse(_text_email(body, headers))
+        assert parsed.body == "Température"
+
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            b"",
+            b"Content-Type: text/plain\n",
+            b"Content-Type: text/plain; charset=us-ascii\n",
+            b"Content-Type: text/plain; charset=ANSI_X3.4-1968\n",
+        ],
+        ids=["no-content-type", "no-charset", "us-ascii", "cron-c-locale"],
+    )
+    def test_missing_or_ascii_label_decodes_8bit_body_as_utf8(
+        self,
+        headers: bytes,
+        app_config: AppConfig,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        raw = _text_email("Température €100".encode(), headers)
+        with caplog.at_level(logging.WARNING, logger="telegram_sendmail.parser"):
+            parsed = EmailParser(app_config).parse(raw)
+        assert parsed.body == "Température €100"
+        assert not caplog.records
+
+    @pytest.mark.parametrize("label", ["unknown-8bit", "zlib", "undefined"])
+    def test_unusable_charset_label_decodes_as_utf8_with_warning(
+        self,
+        label: str,
+        app_config: AppConfig,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        raw = _text_email(
+            "Température".encode(),
+            f"Content-Type: text/plain; charset={label}\n".encode(),
+        )
+        with caplog.at_level(logging.WARNING, logger="telegram_sendmail.parser"):
+            parsed = EmailParser(app_config).parse(raw)
+        assert parsed.body == "Température"
+        assert any(
+            r.levelname == "WARNING" and label in r.message for r in caplog.records
+        )
+
+    @pytest.mark.parametrize(
+        "headers",
+        [b"", b"Content-Type: text/plain; charset=utf-8\n"],
+        ids=["no-charset", "declared-utf-8"],
+    )
+    def test_undecodable_bytes_become_replacement_characters(
+        self, headers: bytes, app_config: AppConfig
+    ):
+        parsed = EmailParser(app_config).parse(_text_email(b"Temp\xe9rature", headers))
+        assert parsed.body == "Temp\ufffdrature"
 
 
 # --------------------------------------------------------------------------
