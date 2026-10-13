@@ -201,6 +201,41 @@ def _audit_permissions(config_file: Path) -> None:
         )
 
 
+def _describe_parse_error(exc: configparser.Error) -> str:
+    """
+    Return where the config file is malformed and how to repair it.
+
+    The description is built from the error's type and line numbers alone,
+    never from its text. That text quotes the file, and the offending line
+    is the token line when the `[telegram]` header is missing; the message
+    is logged before the token is known, so nothing could redact it.
+    """
+    match exc:
+        case configparser.MissingSectionHeaderError(lineno=int(lineno)):
+            return (
+                f"line {lineno} comes before any section header. "
+                "Put a header such as '[telegram]' above it."
+            )
+        case configparser.ParsingError(errors=errors) if errors:
+            lines = ", ".join(str(lineno) for lineno, _ in errors)
+            return (
+                f"line(s) {lines} cannot be read as 'key = value'. "
+                "Correct or remove each one."
+            )
+        case configparser.DuplicateSectionError(lineno=int(lineno)):
+            return f"line {lineno} repeats a section header. Merge the two sections."
+        case configparser.DuplicateOptionError(lineno=int(lineno)):
+            return (
+                f"line {lineno} repeats a key of its section. "
+                "Remove one of the two lines."
+            )
+        case _:
+            return (
+                "the file is not valid INI. "
+                "Use '[section]' headers followed by 'key = value' lines."
+            )
+
+
 def _validate_range(
     value: int,
     bounds: tuple[int, int],
@@ -600,7 +635,8 @@ class ConfigLoader:
         Raises:
             ConfigurationError: If no config file is found, the explicit path
                                 is not a regular file, the file cannot be
-                                read, or a required key is absent or empty.
+                                read or parsed, or a required key is absent
+                                or empty.
         """
         if config_file is None:
             config_file = _locate_config_file()
@@ -628,9 +664,11 @@ class ConfigLoader:
         try:
             parser.read(config_file, encoding="utf-8")
         except configparser.Error as exc:
+            # Chaining the parser error would show its text in every traceback
             raise ConfigurationError(
-                f"Failed to parse config file '{config_file}': {exc}"
-            ) from exc
+                f"Failed to parse config file '{config_file}': "
+                f"{_describe_parse_error(exc)}"
+            ) from None
 
         token = _require(parser, "telegram", "token", config_file)
         chat_id = _require(parser, "telegram", "chat_id", config_file)

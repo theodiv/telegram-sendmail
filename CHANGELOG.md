@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process locale, and deliver and spool mail that is not valid UTF-8 instead
   of dropping it. ([#69](https://github.com/theodiv/telegram-sendmail/issues/69))
 
+### Security
+
+- Report a configuration file that cannot be parsed by file name and line
+  number only. Previously, the logged error quoted the offending line,
+  which could be the line that holds the bot token.
+
 ## [1.3.1] - 2026-10-09
 
 ### Security

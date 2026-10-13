@@ -15,6 +15,9 @@ Coverage targets
     - Emits a WARNING containing "insecure" when the file is world-readable (0644)
     - Includes the recommended "0600" string in the warning to guide the operator
 
+`_describe_parse_error`
+    - Returns fixed text, never the error's own, for an unknown parser error or one without lines
+
 `_validate_range` / `_validate_range_float`
     - Returns the value unchanged when it falls strictly within the valid range
     - Accepts the lower bound as a valid value (inclusive)
@@ -72,6 +75,8 @@ Coverage targets
     - Raises ConfigurationError when no config file is found on disk
     - Raises ConfigurationError when the config file exists but is not readable
     - Raises ConfigurationError when the explicit path is missing or is a directory
+    - Raises ConfigurationError naming the file and line numbers when the file cannot be parsed
+    - Keeps values, keys, and section names of an unparsable file out of the error and its traceback
     - Raises ConfigurationError when the [telegram] token key is absent
     - Raises ConfigurationError when the [telegram] chat_id key is absent
     - Returns a fully populated AppConfig for a minimal valid config file
@@ -115,6 +120,9 @@ Design notes
   so that regression cannot create a directory under `/tmp`.
 - The missing-explicit-path test writes a valid user config first, so a regression
   that fell back to discovery would load it and return instead of raising.
+- Parse-error tests search the output of `traceback.format_exception` instead of
+  asserting that `__cause__` is None. What must hold is that no rendering of the error
+  shows file content; how the parser's exception is kept out is an implementation choice.
 """
 
 from __future__ import annotations
@@ -124,6 +132,7 @@ import getpass
 import logging
 import os
 import stat
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -139,6 +148,7 @@ from telegram_sendmail.config import (
     _DEFAULT_TELEGRAM_TIMEOUT,
     ConfigLoader,
     _audit_permissions,
+    _describe_parse_error,
     _locate_config_file,
     _parse_filters,
     _parse_options,
@@ -176,6 +186,12 @@ def _minimal_ini(token: str = "tok", chat_id: str = "-123") -> str:
 def _fallback_dir(base: Path) -> Path:
     """Return the per-user fallback directory that resolution derives from `base`."""
     return Path(f"{base}-{os.geteuid()}")
+
+
+# The parse-error tests put this text at the offending spot of each config
+# file they write, as a value, a whole line, a key, or a section name, so one
+# search shows whether any of it reached the error.
+_FILE_TEXT = "from-the-file"
 
 
 @pytest.fixture
@@ -304,6 +320,27 @@ class TestAuditPermissions:
         with caplog.at_level(logging.WARNING, logger="telegram_sendmail.config"):
             _audit_permissions(config_file)
         assert any("0600" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------
+# _describe_parse_error
+# --------------------------------------------------------------------------
+
+
+class TestDescribeParseError:
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(configparser.Error(_FILE_TEXT), id="unknown-error"),
+            pytest.param(
+                configparser.ParsingError(_FILE_TEXT), id="parsing-error-without-lines"
+            ),
+        ],
+    )
+    def test_fixed_text_replaces_the_parser_error_text(self, error: configparser.Error):
+        description = _describe_parse_error(error)
+        assert _FILE_TEXT not in description
+        assert "not valid INI" in description
 
 
 # --------------------------------------------------------------------------
@@ -875,6 +912,44 @@ class TestConfigLoaderLoad:
         with pytest.raises(ConfigurationError, match="not a regular file") as exc_info:
             ConfigLoader.load(tmp_path)
         assert f"'{tmp_path}'" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("ini", "location"),
+        [
+            pytest.param(
+                f"token = {_FILE_TEXT}\nchat_id = -123\n",
+                "line 1",
+                id="no-section-header",
+            ),
+            pytest.param(
+                f"[telegram]\ntoken = abc\n{_FILE_TEXT}\nchat_id = -123\n",
+                "line(s) 3",
+                id="line-without-delimiter",
+            ),
+            pytest.param(
+                f"{_minimal_ini()}[options]\nkey-{_FILE_TEXT} = 1\nkey-{_FILE_TEXT} = 2\n",
+                "line 6",
+                id="repeated-key",
+            ),
+            pytest.param(
+                f"{_minimal_ini()}[section-{_FILE_TEXT}]\n[section-{_FILE_TEXT}]\n",
+                "line 5",
+                id="repeated-section",
+            ),
+        ],
+    )
+    def test_parse_failure_names_file_and_line_without_file_content(
+        self, patched_config_constants: dict[str, Path], ini: str, location: str
+    ):
+        user_ini = patched_config_constants["user_ini"]
+        user_ini.write_text(ini)
+        user_ini.chmod(0o600)
+        with pytest.raises(ConfigurationError) as exc_info:
+            ConfigLoader.load()
+        assert _FILE_TEXT not in "".join(traceback.format_exception(exc_info.value))
+        message = str(exc_info.value)
+        assert f"'{user_ini}'" in message
+        assert location in message
 
     def test_raises_config_error_when_token_is_missing(
         self, patched_config_constants: dict[str, Path]

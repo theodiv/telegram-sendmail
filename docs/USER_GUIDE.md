@@ -570,7 +570,9 @@ API hard limit of 4096 characters, so values of `message_max_length` near
 every root-logger handler after the bot token is loaded. It automatically
 redacts the bot token from all log output at every log level, including
 output from third-party loggers such as `urllib3` and `requests`. This
-prevents accidental token exposure via syslog or console output.
+prevents accidental token exposure via syslog or console output. A
+configuration file that cannot be parsed is reported by file name and line
+number only; no line of the file is written to the log.
 
 **Config File Permissions**: A `WARNING` is emitted on every startup if the
 configuration file is group- or world-readable. The recommended permissions

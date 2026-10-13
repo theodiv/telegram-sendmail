@@ -84,6 +84,7 @@ Coverage targets
 
 `main`
     - Calls sys.exit(78) on ConfigurationError from ConfigLoader.load() or a missing --config file
+    - Calls sys.exit(78) for an unparsable --config file and logs its line number, never its content
     - Loads the file passed via --config and sends the probe to its chat_id
     - Calls sys.exit(1) when sys.stdin.isatty() returns True (interactive guard)
     - Calls sys.exit(0) when pipe-mode delivery succeeds with non-TTY stdin
@@ -110,7 +111,12 @@ Design notes
   `tmp_path` so spool resolution never creates a fallback directory under `/tmp`.
   The missing-file test activates `requests_mock` with no routes, so a
   regression that fell back to a host config fails instead of reaching the
-  network.
+  network. The unparsable-file test turns spooling off instead and passes no
+  mode flag with a TTY stdin, so a regression that loaded the file would create
+  nothing and stop at the interactive guard.
+- The unparsable-file test cuts a fake token inside its secret part and searches
+  every captured record for the tail. One case leaves the whole token on the
+  offending line and the other only that tail, so a single needle serves both.
 - The disabled-spooling `_deliver` test runs the real `MailSpooler` instead of
   `_TrackingSpooler`, because the stub records a call whether or not a write
   happens; only an empty `tmp_path` proves the pipeline wrote nothing.
@@ -1264,6 +1270,9 @@ class TestRunInteractiveMode:
 
 
 class TestMainDispatch:
+    _TOKEN_HEAD = "123456789:AAtestBOTt"
+    _TOKEN_TAIL = "okenXXXXXXXXXXXXXXXXXXX"
+
     class _FakeTTY(io.StringIO):
         """StringIO whose isatty() returns True, simulating a real terminal."""
 
@@ -1310,6 +1319,47 @@ class TestMainDispatch:
                 main()
         assert exc_info.value.code == _EX_CONFIG
         assert any(f"'{missing}'" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize(
+        ("ini", "location"),
+        [
+            pytest.param(
+                f"token = {_TOKEN_HEAD}{_TOKEN_TAIL}\nchat_id = -100555\n",
+                "line 1",
+                id="no-section-header",
+            ),
+            pytest.param(
+                f"[telegram]\ntoken = {_TOKEN_HEAD}\n{_TOKEN_TAIL}\nchat_id = -100555\n",
+                "line(s) 3",
+                id="token-wrapped-onto-a-second-line",
+            ),
+        ],
+    )
+    def test_unparsable_config_exits_78_without_logging_file_content(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        no_setup_logging: None,
+        config_file_factory: Callable[[str], Path],
+        caplog: pytest.LogCaptureFixture,
+        ini: str,
+        location: str,
+    ):
+        config_file = config_file_factory(ini + "[options]\nspool_enabled = false\n")
+        monkeypatch.setattr(
+            sys, "argv", ["telegram-sendmail", "--config", str(config_file)]
+        )
+        monkeypatch.setattr(sys, "stdin", self._FakeTTY())
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == _EX_CONFIG
+        assert not any(self._TOKEN_TAIL in r.getMessage() for r in caplog.records)
+        assert any(
+            r.levelno == logging.ERROR
+            and f"'{config_file}'" in r.getMessage()
+            and location in r.getMessage()
+            for r in caplog.records
+        )
 
     def test_config_flag_loads_given_file_in_probe_mode(
         self,
