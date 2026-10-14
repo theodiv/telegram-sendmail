@@ -5,6 +5,8 @@ Public surface
 --------------
 - `TelegramClient` — sends formatted messages to a Telegram chat via the
                      Bot API, with configurable retry and timeout behaviour.
+- `quote_token`    — percent-encodes the bot token as one URL path segment,
+                     the only form in which request URLs carry it.
 
 The client owns a `requests.Session` that is configured once at construction
 time and reused for all requests within a delivery pipeline invocation. It
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from http import HTTPStatus
+from urllib.parse import quote
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -37,6 +40,19 @@ _RETRY_STATUS_CODES: frozenset[int] = frozenset({
     HTTPStatus.SERVICE_UNAVAILABLE,
     HTTPStatus.GATEWAY_TIMEOUT,
 })  # fmt: skip
+
+
+def quote_token(token: str) -> str:
+    """
+    Return `token` percent-encoded as one segment of a request URL path.
+
+    A token as BotFather issues it needs no encoding and comes back
+    unchanged. Any other character is encoded here rather than left to
+    `requests`, which would pick its own encoding and end the path at a
+    `#` or `?`. Request URLs therefore carry the whole token in exactly
+    this form, which log redaction can match.
+    """
+    return quote(token, safe=":")
 
 
 class TelegramClient:
@@ -113,7 +129,7 @@ class TelegramClient:
         return session
 
     def _api_url(self, method: str) -> str:
-        return f"{_TELEGRAM_API_BASE}/bot{self._token}/{method}"
+        return f"{_TELEGRAM_API_BASE}/bot{quote_token(self._token)}/{method}"
 
     # ------------------------------------------------------------------
     # Public interface

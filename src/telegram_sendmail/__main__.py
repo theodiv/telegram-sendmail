@@ -36,7 +36,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from telegram_sendmail import __version__
-from telegram_sendmail.client import _RETRY_STATUS_CODES, TelegramClient
+from telegram_sendmail.client import _RETRY_STATUS_CODES, TelegramClient, quote_token
 from telegram_sendmail.config import AppConfig, ConfigLoader
 from telegram_sendmail.exceptions import (
     ConfigurationError,
@@ -238,21 +238,27 @@ class _TokenRedactFilter(logging.Filter):
     """
     Logging filter that replaces the bot token with a safe placeholder.
 
-    Installed on every root-logger handler after the token is known so that
-    third-party loggers (`urllib3`, `requests`) cannot leak the token at
-    DEBUG level.
+    Installed on every root-logger handler after the token is known, so
+    that neither third-party loggers (`urllib3`, `requests`) nor the error
+    messages of those libraries can leak it. Both quote the request URL,
+    which carries the token as `quote_token` encodes it, so that form is
+    replaced as well as the value from the config file.
     """
 
     def __init__(self, token: str) -> None:
         super().__init__()
-        self._token = token
+        # Longest first, so a form that contains the other is replaced whole
+        self._forms = sorted({token, quote_token(token)}, key=len, reverse=True)
         self._placeholder = f"{token[:8]}[…REDACTED…]"
 
     def filter(self, record: logging.LogRecord) -> bool:
         """Redact the token from the fully formatted message."""
         formatted = record.getMessage()
-        if self._token in formatted:
-            record.msg = formatted.replace(self._token, self._placeholder)
+        redacted = formatted
+        for form in self._forms:
+            redacted = redacted.replace(form, self._placeholder)
+        if redacted != formatted:
+            record.msg = redacted
             record.args = None
         return True
 

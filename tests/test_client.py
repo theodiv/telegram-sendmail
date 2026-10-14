@@ -9,6 +9,7 @@ Coverage targets
 
 `TelegramClient.send` — happy path
     - POSTs to the correct sendMessage URL containing the bot token
+    - Sends a token value that needs URL encoding as one path segment, then sendMessage
     - Payload includes the configured chat_id
     - Payload sets parse_mode to "HTML"
     - Payload disables link previews via link_preview_options
@@ -55,11 +56,15 @@ Design notes
   the HTTPS adapter at the HTTPAdapter.send() level, so urllib3's urlopen() —
   where the Retry loop actually executes — is never entered. Regardless of
   max_retries, requests_mock always records call_count == 1.
+- The URL-encoding test decodes the token's path segment instead of comparing
+  it with `quote_token`, so it checks what reaches Telegram rather than
+  repeating the encoder.
 """
 
 from __future__ import annotations
 
 import dataclasses
+from urllib.parse import unquote, urlsplit
 
 import pytest
 import requests
@@ -109,6 +114,24 @@ class TestTelegramClientSendSuccess:
         with TelegramClient(app_config) as client:
             client.send("hello")
         assert mock_telegram_ok.last_request.url == send_telegram_url_pattern
+
+    def test_token_that_needs_url_encoding_is_sent_as_one_path_segment(
+        self, app_config: AppConfig, requests_mock: requests_mock_module.Mocker
+    ):
+        # A quoted value with an inline comment. Left to requests, its '#' and
+        # '?' would end the path and its '/' would split it.
+        token = f'"{app_config.token}" # bot/a?b'
+        requests_mock.post(requests_mock_module.ANY, json={"ok": True})
+        config = dataclasses.replace(app_config, token=token)
+        with TelegramClient(config) as client:
+            client.send("hello")
+        url = urlsplit(requests_mock.last_request.url)
+        assert (url.query, url.fragment) == ("", "")
+        assert [unquote(part) for part in url.path.split("/")] == [
+            "",
+            f"bot{token}",
+            "sendMessage",
+        ]
 
     def test_payload_contains_configured_chat_id(
         self,
