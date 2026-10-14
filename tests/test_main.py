@@ -94,6 +94,7 @@ Coverage targets
     - --probe takes dispatch priority over -bs if both are present
     - Calls sys.exit(75) when pipe-mode hits HTTP 429 rate limit
     - Installs a _TokenRedactFilter on every root-logger handler after config is loaded
+    - Calls sys.exit(1) on a refused connection and redacts a token value that needs URL encoding
     - Logs ConfigurationError at ERROR level before exit 78, naming the --config path when given
 
 Design notes
@@ -114,9 +115,19 @@ Design notes
   network. The unparsable-file test turns spooling off instead and passes no
   mode flag with a TTY stdin, so a regression that loaded the file would create
   nothing and stop at the interactive guard.
-- The unparsable-file test cuts a fake token inside its secret part and searches
-  every captured record for the tail. One case leaves the whole token on the
-  offending line and the other only that tail, so a single needle serves both.
+- The unparsable-file test cuts a fake token between its bot ID and its secret
+  and searches every captured record for the secret. One case leaves the whole
+  token on the offending line and the other only the secret, so a single needle
+  serves both.
+- The URL-encoding redaction test raises, from a `requests_mock` callback, the
+  `ConnectionError` urllib3 raises for a refused connection, with the request
+  path in its message. `requests_mock` replaces the transport adapter, so
+  urllib3 never builds that error itself. The test also requires the redacted
+  path in the ERROR record, so a message that lost the URL cannot pass.
+- `_TOKEN_HEAD` holds a bot ID that no other test uses. Earlier `main()` tests
+  leave a `_TokenRedactFilter` for the `app_config` token on pytest's
+  session-wide log handlers; with that token, the stale filter would rewrite
+  part of the encoded value before the filter under test sees it.
 - The disabled-spooling `_deliver` test runs the real `MailSpooler` instead of
   `_TrackingSpooler`, because the stub records a call whether or not a write
   happens; only an empty `tmp_path` proves the pipeline wrote nothing.
@@ -143,6 +154,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 import pytest
+import requests
 import requests_mock as requests_mock_module
 
 import telegram_sendmail.__main__ as main_module
@@ -1270,8 +1282,8 @@ class TestRunInteractiveMode:
 
 
 class TestMainDispatch:
-    _TOKEN_HEAD = "123456789:AAtestBOTt"
-    _TOKEN_TAIL = "okenXXXXXXXXXXXXXXXXXXX"
+    _TOKEN_HEAD = "987654321:"
+    _TOKEN_TAIL = "AAtestBOTtokenXXXXXXXXXXXXXXXXXXX"
 
     class _FakeTTY(io.StringIO):
         """StringIO whose isatty() returns True, simulating a real terminal."""
@@ -1288,6 +1300,17 @@ class TestMainDispatch:
     def _raise_rate_limit(raw: bytes, sender: Any, subject: Any, config: Any) -> None:
         """Simulate Telegram API rate limit by raising TelegramAPIError with 429."""
         raise TelegramAPIError("too many requests", status_code=429)
+
+    @staticmethod
+    def _refuse_connection(
+        request: requests_mock_module.Request, context: requests_mock_module.Context
+    ) -> str:
+        """Simulate a refused connection; urllib3's error quotes the request path."""
+        raise requests.exceptions.ConnectionError(
+            "HTTPSConnectionPool(host='api.telegram.org', port=443): "
+            f"Max retries exceeded with url: {request.path_url} "
+            "(Caused by NewConnectionError('Connection refused'))"
+        )
 
     def test_configuration_error_exits_with_code_78(
         self,
@@ -1516,3 +1539,48 @@ class TestMainDispatch:
             main()
         for handler in logging.root.handlers:
             assert any(isinstance(f, _TokenRedactFilter) for f in handler.filters)
+
+    @pytest.mark.parametrize(
+        "token_line",
+        [
+            pytest.param(
+                f'token = "{_TOKEN_HEAD}{_TOKEN_TAIL}"',
+                id="double-quoted-value",
+            ),
+            pytest.param(
+                f"token = {_TOKEN_HEAD}{_TOKEN_TAIL} ; prod bot",
+                id="inline-semicolon-comment",
+            ),
+            pytest.param(
+                f"token = {_TOKEN_HEAD}{_TOKEN_TAIL} # prod bot",
+                id="inline-hash-comment",
+            ),
+        ],
+    )
+    def test_failed_delivery_redacts_a_token_value_that_needs_url_encoding(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        no_setup_logging: None,
+        config_file_factory: Callable[[str], Path],
+        requests_mock: requests_mock_module.Mocker,
+        caplog: pytest.LogCaptureFixture,
+        token_line: str,
+    ):
+        config_file = config_file_factory(
+            f"[telegram]\n{token_line}\nchat_id = -100555\n"
+            "[options]\nspool_enabled = false\n"
+        )
+        requests_mock.post(requests_mock_module.ANY, text=self._refuse_connection)
+        monkeypatch.setattr(
+            sys, "argv", ["telegram-sendmail", "--config", str(config_file)]
+        )
+        monkeypatch.setattr(sys, "stdin", _stdin(b"Subject: backup\n\nbody\n"))
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == _EX_ERROR
+        assert not any(self._TOKEN_TAIL in r.getMessage() for r in caplog.records)
+        assert any(
+            r.levelno == logging.ERROR and "[…REDACTED…]/sendMessage" in r.getMessage()
+            for r in caplog.records
+        )

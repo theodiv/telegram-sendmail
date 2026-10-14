@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report a configuration file that cannot be parsed by file name and line
   number only. Previously, the logged error quoted the offending line,
   which could be the line that holds the bot token.
+- Redact the bot token from log output when the configured value holds
+  characters that a request URL must encode, such as quotes or an inline
+  comment. Previously, such a value reached the log in its encoded form,
+  which the redaction did not match.
 
 ## [1.3.1] - 2026-10-09
 
